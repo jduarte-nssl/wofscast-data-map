@@ -1,0 +1,2333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WoFSCast Data Pipeline — Interactive Map</title>
+  <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+  <style>
+    /* ── Reset & base ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f172a; color: #e2e8f0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+    /* ── Top bar ── */
+    #topbar {
+      background: #1e293b;
+      border-bottom: 1px solid #334155;
+      padding: 0 16px;
+      height: 52px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-shrink: 0;
+      z-index: 10;
+    }
+    #topbar h1 { font-size: 15px; font-weight: 700; color: #f8fafc; white-space: nowrap; }
+    #topbar h1 span { color: #38bdf8; }
+
+    #search {
+      flex: 1;
+      max-width: 280px;
+      padding: 6px 12px;
+      border-radius: 6px;
+      border: 1px solid #475569;
+      background: #0f172a;
+      color: #e2e8f0;
+      font-size: 13px;
+      outline: none;
+    }
+    #search:focus { border-color: #38bdf8; }
+
+    .filter-btn {
+      padding: 5px 11px;
+      border-radius: 5px;
+      border: 1px solid transparent;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity .15s, border-color .15s;
+      color: #fff;
+    }
+    .filter-btn:hover { opacity: .85; }
+    .filter-btn.active { border-color: #fff; }
+
+    #btn-reset {
+      margin-left: auto;
+      padding: 5px 12px;
+      border-radius: 5px;
+      border: 1px solid #475569;
+      background: #334155;
+      color: #94a3b8;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    #btn-reset:hover { background: #475569; color: #e2e8f0; }
+
+    /* ── View toggle ── */
+    #view-toggle-wrap {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 4px;
+      border-left: 1px solid #334155;
+      margin-left: 4px;
+      flex-shrink: 0;
+    }
+    .toggle-label {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .03em;
+      white-space: nowrap;
+      transition: color .2s;
+    }
+    #lbl-hier  { color: #38bdf8; }
+    #lbl-graph { color: #475569; }
+    body.graph-mode #lbl-hier  { color: #475569; }
+    body.graph-mode #lbl-graph { color: #a78bfa; }
+
+    /* pill track */
+    #view-toggle {
+      position: relative;
+      width: 40px;
+      height: 22px;
+      flex-shrink: 0;
+    }
+    #view-toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+    .toggle-track {
+      position: absolute;
+      inset: 0;
+      background: #1e40af;
+      border-radius: 11px;
+      cursor: pointer;
+      transition: background .25s;
+      border: 1px solid #3b82f6;
+    }
+    body.graph-mode .toggle-track {
+      background: #5b21b6;
+      border-color: #7c3aed;
+    }
+    .toggle-thumb {
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #fff;
+      transition: transform .25s cubic-bezier(.4,0,.2,1), background .25s;
+      pointer-events: none;
+      box-shadow: 0 1px 4px rgba(0,0,0,.4);
+    }
+    body.graph-mode .toggle-thumb { transform: translateX(18px); }
+
+    /* physics indicator badge */
+    #phys-badge {
+      display: none;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 9px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 600;
+      background: rgba(124,58,237,.15);
+      border: 1px solid rgba(124,58,237,.4);
+      color: #a78bfa;
+    }
+    body.graph-mode #phys-badge { display: flex; }
+    .phys-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: #a78bfa;
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%,100% { opacity:1; transform:scale(1); }
+      50%      { opacity:.4; transform:scale(.7); }
+    }
+
+    /* ── Main layout ── */
+    #main { display: flex; flex: 1; min-height: 0; }
+
+    /* ── Graph canvas ── */
+    #graph { flex: 1; min-width: 0; position: relative; }
+    #network { width: 100%; height: 100%; }
+
+    /* ── Swim lanes ── */
+    #swimlanes {
+      position: absolute; inset: 0;
+      pointer-events: none;
+      overflow: hidden;
+      z-index: 1;
+    }
+    .swimlane {
+      position: absolute; left: 0; right: 0;
+      border-top: 1px solid rgba(148,163,184,0.12);
+      box-sizing: border-box;
+    }
+    .swimlane:nth-child(odd)  { background: rgba(255,255,255,0.025); }
+    .swimlane:nth-child(even) { background: rgba(0,0,0,0.0); }
+    .swimlane-label {
+      position: absolute; left: 8px; top: 50%;
+      transform: translateY(-50%);
+      font-size: 10px; font-weight: 600; letter-spacing: .04em;
+      color: rgba(148,163,184,0.55);
+      white-space: nowrap;
+      text-transform: uppercase;
+      user-select: none;
+    }
+
+    /* ── Legend ── */
+    #legend {
+      position: absolute;
+      bottom: 14px;
+      right: 14px;
+      background: rgba(15,23,42,.88);
+      border: 1px solid #334155;
+      border-radius: 8px;
+      font-size: 11px;
+      backdrop-filter: blur(4px);
+      pointer-events: all;
+      overflow: hidden;
+      transition: height .25s ease, padding .25s ease;
+    }
+    #legend.collapsed { height: 32px; }
+    #legend-header {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px;
+      padding: 8px 12px;
+      cursor: pointer;
+      user-select: none;
+      color: #94a3b8;
+      font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em;
+    }
+    #legend-header:hover { color: #e2e8f0; }
+    #legend-toggle-icon { font-size: 10px; transition: transform .25s; }
+    #legend.collapsed #legend-toggle-icon { transform: rotate(180deg); }
+    #legend-body { padding: 0 12px 10px; }
+    #legend.collapsed #legend-body { display: none; }
+    #legend h4 { font-size: 11px; color: #94a3b8; margin: 6px 0 4px; text-transform: uppercase; letter-spacing: .05em; }
+    #legend h4:first-child { margin-top: 0; }
+    .leg-row { display: flex; align-items: center; gap: 7px; margin-bottom: 4px; }
+    .leg-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+
+    /* node shape legend swatches */
+    .leg-shape {
+      width: 14px; height: 14px; flex-shrink: 0; display: inline-block;
+    }
+    .shape-triangle {
+      width: 0; height: 0;
+      border-left: 7px solid transparent;
+      border-right: 7px solid transparent;
+      border-bottom: 13px solid var(--sc, #94a3b8);
+      background: transparent !important;
+    }
+    .shape-ellipse {
+      border-radius: 50%;
+      background: var(--sc, #94a3b8);
+    }
+    .shape-database {
+      border-radius: 2px 2px 0 0;
+      background: var(--sc, #94a3b8);
+      position: relative;
+    }
+    .shape-database::after {
+      content: "";
+      position: absolute;
+      bottom: -4px; left: 0;
+      width: 100%; height: 3px;
+      background: var(--sc, #94a3b8);
+      border-radius: 0 0 2px 2px;
+    }
+    .shape-box {
+      border-radius: 2px;
+      background: var(--sc, #94a3b8);
+    }
+    .shape-diamond {
+      width: 10px; height: 10px;
+      transform: rotate(45deg);
+      border-radius: 1px;
+      background: var(--sc, #94a3b8);
+      margin: 2px;
+    }
+    .shape-star {
+      clip-path: polygon(50% 0%,61% 35%,98% 35%,68% 57%,79% 91%,50% 70%,21% 91%,32% 57%,2% 35%,39% 35%);
+      background: var(--sc, #94a3b8);
+      width: 15px; height: 15px;
+    }
+    .shape-hexagon {
+      clip-path: polygon(25% 0%,75% 0%,100% 50%,75% 100%,25% 100%,0% 50%);
+      background: var(--sc, #94a3b8);
+    }
+    /* edge legend swatch */
+    .leg-line {
+      width: 24px; height: 3px; border-radius: 2px; flex-shrink: 0;
+    }
+    .leg-line.dashed {
+      background: repeating-linear-gradient(
+        90deg, var(--lc) 0, var(--lc) 4px, transparent 4px, transparent 8px
+      ) !important;
+    }
+    .leg-sep { border: none; border-top: 1px solid #334155; margin: 6px 0; }
+
+    /* ── Sidebar ── */
+    #sidebar {
+      width: 0;
+      min-width: 0;
+      overflow: hidden;
+      background: #1e293b;
+      border-left: 1px solid #334155;
+      transition: width .25s ease, min-width .25s ease;
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+    #sidebar.open { width: 380px; min-width: 380px; }
+
+    #sidebar-inner { padding: 20px; overflow-y: auto; flex: 1; }
+
+    #sb-close {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: #334155;
+      border: none;
+      color: #94a3b8;
+      width: 26px; height: 26px;
+      border-radius: 50%;
+      cursor: pointer;
+      font-size: 14px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #sb-close:hover { background: #475569; color: #e2e8f0; }
+
+    #sb-category {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      margin-bottom: 10px;
+    }
+    #sb-title { font-size: 18px; font-weight: 700; color: #f8fafc; margin-bottom: 6px; line-height: 1.3; }
+    #sb-subtitle { font-size: 12px; color: #64748b; margin-bottom: 14px; }
+    #sb-desc { font-size: 13px; color: #cbd5e1; line-height: 1.65; margin-bottom: 16px; }
+
+    .sb-section { margin-bottom: 16px; }
+    .sb-section h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: #64748b; margin-bottom: 8px; border-bottom: 1px solid #334155; padding-bottom: 4px; }
+
+    .tag-list { display: flex; flex-wrap: wrap; gap: 5px; }
+    .tag {
+      padding: 3px 9px;
+      border-radius: 4px;
+      font-size: 11px;
+      background: #334155;
+      color: #94a3b8;
+      border: 1px solid #475569;
+    }
+
+    .link-list { display: flex; flex-direction: column; gap: 6px; }
+    .link-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      background: #0f172a;
+      border: 1px solid #334155;
+      text-decoration: none;
+      transition: border-color .15s;
+    }
+    .link-item:hover { border-color: #38bdf8; }
+    .link-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+    .link-text { display: flex; flex-direction: column; }
+    .link-title { font-size: 12px; font-weight: 600; color: #e2e8f0; }
+    .link-url { font-size: 10px; color: #475569; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 280px; }
+
+    .future-box {
+      background: rgba(245,158,11,.08);
+      border: 1px solid rgba(245,158,11,.35);
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      color: #fcd34d;
+      line-height: 1.6;
+    }
+    .future-box strong { color: #fbbf24; }
+
+    /* ── Connections section ── */
+    .conn-list { display: flex; flex-direction: column; gap: 4px; }
+    .conn-node-btn {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: 6px;
+      background: #0f172a;
+      border: 1px solid #334155;
+      cursor: pointer;
+      text-align: left;
+      width: 100%;
+      transition: border-color .15s, background .15s;
+    }
+    .conn-node-btn:hover { border-color: #38bdf8; background: #1e3a5f; }
+    .conn-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .conn-label { font-size: 12px; color: #e2e8f0; font-weight: 500; line-height: 1.3; }
+    .conn-cat { font-size: 10px; color: #64748b; margin-top: 1px; }
+    .conn-arrow { margin-left: auto; font-size: 12px; color: #475569; flex-shrink: 0; }
+
+    /* ── Edge button in node connections list ── */
+    .conn-edge-btn {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: 6px;
+      background: #0f172a;
+      border: 1px solid #334155;
+      cursor: pointer;
+      text-align: left;
+      width: 100%;
+      transition: border-color .15s, background .15s;
+    }
+    .conn-edge-btn:hover { border-color: #38bdf8; background: #1e3a5f; }
+    .conn-edge-line { width: 20px; height: 3px; border-radius: 2px; flex-shrink: 0; }
+    .conn-edge-peer { font-size: 12px; color: #e2e8f0; font-weight: 500; }
+    .conn-edge-lbl  { font-size: 10px; color: #64748b; margin-top: 1px; font-style: italic; }
+
+    /* ── Edge flow diagram ── */
+    .edge-flow { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
+    .edge-flow-node {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      background: #0f172a;
+      border: 1px solid #334155;
+      cursor: pointer;
+      transition: border-color .15s, background .15s;
+    }
+    .edge-flow-node:hover { border-color: #38bdf8; background: #1e3a5f; }
+    .edge-flow-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .edge-flow-name { font-size: 12px; font-weight: 600; color: #e2e8f0; }
+    .edge-flow-cat  { font-size: 10px; color: #64748b; margin-top: 1px; }
+    .edge-flow-connector {
+      display: flex; align-items: center; gap: 8px;
+      padding: 4px 0 4px 16px;
+    }
+    .edge-flow-line {
+      width: 2px; height: 28px; flex-shrink: 0;
+      border-radius: 1px; margin-left: 4px;
+    }
+    .edge-flow-arrow-label {
+      font-size: 10px; color: #64748b; font-style: italic; white-space: nowrap;
+    }
+
+    /* ── Isolate toggle switch ── */
+    .isolate-switch { position:relative; display:inline-block; width:36px; height:20px; flex-shrink:0; }
+    .isolate-switch input { opacity:0; width:0; height:0; }
+    .isolate-slider {
+      position:absolute; cursor:pointer; inset:0;
+      background:#334155; border-radius:20px;
+      transition:.2s;
+    }
+    .isolate-slider:before {
+      content:""; position:absolute;
+      width:14px; height:14px; left:3px; bottom:3px;
+      background:#94a3b8; border-radius:50%;
+      transition:.2s;
+    }
+    .isolate-switch input:checked + .isolate-slider { background:#0ea5e9; }
+    .isolate-switch input:checked + .isolate-slider:before { transform:translateX(16px); background:#fff; }
+
+    /* ── Tooltip override ── */
+    .vis-tooltip {
+      background: #1e293b !important;
+      border: 1px solid #334155 !important;
+      border-radius: 6px !important;
+      color: #e2e8f0 !important;
+      font-size: 12px !important;
+      padding: 6px 10px !important;
+      max-width: 220px !important;
+    }
+
+    /* ── Empty state ── */
+    #sb-empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      text-align: center;
+      color: #475569;
+      padding: 20px;
+      gap: 10px;
+    }
+    #sb-empty .icon { font-size: 36px; }
+    #sb-empty p { font-size: 13px; line-height: 1.6; }
+  </style>
+</head>
+<body>
+
+<!-- ── Top bar ── -->
+<div id="topbar">
+  <h1>WoFSCast <span>Data Pipeline</span></h1>
+  <input id="search" type="text" placeholder="Search nodes…" />
+  <button class="filter-btn active" data-cat="all"      style="background:#334155; border-color:#64748b;">All</button>
+  <button class="filter-btn" data-cat="sensor"   style="background:#0369a1;">Sensors</button>
+  <button class="filter-btn" data-cat="static"   style="background:#166534;">Static Data</button>
+  <button class="filter-btn" data-cat="rawproc"  style="background:#475569;">Processing</button>
+  <button class="filter-btn" data-cat="global"   style="background:#854d0e;">Global Models</button>
+  <button class="filter-btn" data-cat="regional" style="background:#92400e;">Regional Models</button>
+  <button class="filter-btn" data-cat="wofs"     style="background:#065f46;">WoFS NWP</button>
+  <button class="filter-btn" data-cat="ml"       style="background:#831843;">ML / WoFSCast</button>
+  <button class="filter-btn" data-cat="future"   style="background:#78350f;">Future</button>
+  <!-- ── View mode toggle ── -->
+  <div id="view-toggle-wrap">
+    <span class="toggle-label" id="lbl-hier">Hierarchy</span>
+    <label id="view-toggle" title="Switch between Hierarchical and Graph (physics) view">
+      <input type="checkbox" id="toggle-input" />
+      <span class="toggle-track"><span class="toggle-thumb"></span></span>
+    </label>
+    <span class="toggle-label" id="lbl-graph">Graph</span>
+  </div>
+  <div id="phys-badge"><span class="phys-dot"></span>Physics active</div>
+  <button id="btn-reset">Reset view</button>
+</div>
+
+<!-- ── Main ── -->
+<div id="main">
+  <div id="graph">
+    <div id="swimlanes"></div>
+    <div id="network"></div>
+
+    <div id="legend">
+      <div id="legend-header" onclick="document.getElementById('legend').classList.toggle('collapsed')">
+        Legend
+        <span id="legend-toggle-icon">▲</span>
+      </div>
+      <div id="legend-body">
+      <h4>Node Colors</h4>
+      <div class="leg-row"><div class="leg-dot" style="background:#38bdf8"></div>Physical Sensors</div>
+      <div class="leg-row"><div class="leg-dot" style="background:#94a3b8"></div>Raw Processing</div>
+      <div class="leg-row"><div class="leg-dot" style="background:#4ade80"></div>Static &amp; Ancillary Data</div>
+      <div class="leg-row"><div class="leg-dot" style="background:#f59e0b"></div>Global Models</div>
+      <div class="leg-row"><div class="leg-dot" style="background:#fb923c"></div>Regional Models (RAP/HRRR)</div>
+      <div class="leg-row"><div class="leg-dot" style="background:#34d399"></div>WoFS NWP System</div>
+      <div class="leg-row"><div class="leg-dot" style="background:#f472b6"></div>ML / WoFSCast</div>
+      <div class="leg-row"><div class="leg-dot" style="background:#fbbf24; opacity:.7"></div>Future / Planned</div>
+      <hr class="leg-sep">
+      <h4>Node Shapes</h4>
+      <div class="leg-row"><div class="leg-shape shape-box"      style="--sc:#94a3b8"></div>Physical sensor</div>
+      <div class="leg-row"><div class="leg-shape shape-ellipse"  style="--sc:#94a3b8"></div>Processing / product</div>
+      <div class="leg-row"><div class="leg-shape shape-box"      style="--sc:#94a3b8"></div>Static / reference data</div>
+      <div class="leg-row"><div class="leg-shape shape-box"      style="--sc:#94a3b8"></div>Model / DA system</div>
+      <div class="leg-row"><div class="leg-shape shape-ellipse"  style="--sc:#94a3b8; border-radius:50%"></div>Experimental system</div>
+      <div class="leg-row"><div class="leg-shape shape-diamond"  style="--sc:#94a3b8"></div>ML / AI system</div>
+      <div class="leg-row"><div class="leg-shape shape-hexagon"  style="--sc:#94a3b8"></div>Future / planned</div>
+      <hr class="leg-sep">
+      <h4>Edges</h4>
+      <div class="leg-row"><div class="leg-line" style="background:#f97316"></div>Radar data</div>
+      <div class="leg-row"><div class="leg-line" style="background:#22d3ee"></div>Satellite data</div>
+      <div class="leg-row"><div class="leg-line" style="background:#fbbf24"></div>Conventional obs</div>
+      <div class="leg-row"><div class="leg-line" style="background:#4ade80"></div>Static fields</div>
+      <div class="leg-row"><div class="leg-line" style="background:#60a5fa"></div>Model ICs / BCs</div>
+      <div class="leg-row"><div class="leg-line" style="background:#f472b6"></div>Historical (training)</div>
+      <div class="leg-row"><div class="leg-line" style="background:#c084fc"></div>Training data</div>
+      <div class="leg-row"><div class="leg-line" style="background:#fb923c"></div>Real-time data</div>
+      <div class="leg-row"><div class="leg-line dashed" style="--lc:#a78bfa; background:#a78bfa"></div>ML weights</div>
+      <div class="leg-row"><div class="leg-line dashed" style="--lc:#64748b; background:#64748b"></div>Future / planned</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="sidebar">
+    <div style="position:relative; height:100%; display:flex; flex-direction:column;">
+      <button id="sb-close" onclick="closeSidebar()">✕</button>
+      <div id="sidebar-inner">
+        <div id="sb-empty">
+          <div class="icon">🔍</div>
+          <p>Click any node or edge in the graph to see details, data sources, and links.</p>
+        </div>
+        <div id="sb-content" style="display:none;">
+          <div id="sb-category"></div>
+          <div id="sb-title"></div>
+          <div id="sb-subtitle"></div>
+          <!-- Isolate toggle -->
+          <div id="sb-isolate-row" style="display:flex;align-items:center;gap:10px;margin:10px 0 14px;padding:8px 10px;background:#0f172a;border:1px solid #334155;border-radius:8px;">
+            <label class="isolate-switch">
+              <input type="checkbox" id="sb-isolate-chk">
+              <span class="isolate-slider"></span>
+            </label>
+            <span style="font-size:12px;color:#94a3b8;">Isolate — show only this node and all its upstream sources</span>
+          </div>
+          <div id="sb-desc"></div>
+          <div class="sb-section" id="sb-inputs-sec">
+            <h4>Inputs</h4>
+            <div id="sb-inputs" class="tag-list"></div>
+          </div>
+          <div class="sb-section" id="sb-outputs-sec">
+            <h4>Outputs / Products</h4>
+            <div id="sb-outputs" class="tag-list"></div>
+          </div>
+          <div class="sb-section" id="sb-future-sec">
+            <h4>⚡ Future Changes</h4>
+            <div id="sb-future" class="future-box"></div>
+          </div>
+          <div class="sb-section" id="sb-links-sec">
+            <h4>Primary Sources &amp; Links</h4>
+            <div id="sb-links" class="link-list"></div>
+          </div>
+          <div class="sb-section" id="sb-upstream-sec">
+            <h4>⬆ Incoming connections</h4>
+            <div id="sb-upstream" class="conn-list"></div>
+          </div>
+          <div class="sb-section" id="sb-downstream-sec">
+            <h4>⬇ Outgoing connections</h4>
+            <div id="sb-downstream" class="conn-list"></div>
+          </div>
+          <div class="sb-section" id="sb-ancestors-sec">
+            <h4>⏫ Upstream nodes</h4>
+            <div id="sb-ancestors" class="conn-list"></div>
+          </div>
+          <div class="sb-section" id="sb-descendants-sec">
+            <h4>⏬ Downstream nodes</h4>
+            <div id="sb-descendants" class="conn-list"></div>
+          </div>
+        </div>
+        <!-- ── Edge sidebar ───────────────────────────────── -->
+        <div id="sb-edge" style="display:none;">
+          <div id="sbe-type-badge"></div>
+          <div id="sbe-label" style="font-size:13px;font-weight:700;color:#e2e8f0;margin:10px 0 4px;"></div>
+          <div id="sbe-desc" style="font-size:12px;color:#94a3b8;line-height:1.65;margin-bottom:14px;"></div>
+          <!-- flow diagram -->
+          <div class="sb-section">
+            <h4>Data Flow</h4>
+            <div id="sbe-flow" class="edge-flow"></div>
+          </div>
+          <div class="sb-section" id="sbe-tags-sec">
+            <h4>Data Types</h4>
+            <div id="sbe-tags" class="tag-list"></div>
+          </div>
+          <div class="sb-section" id="sbe-links-sec">
+            <h4>Sources &amp; References</h4>
+            <div id="sbe-links" class="link-list"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════
+// NODE DATA
+// ══════════════════════════════════════════════════════════════
+const NODES_DATA = [
+
+  // ── Physical Sensors ──────────────────────────────────────
+  { id:"WSR88D", label:"WSR-88D\nNEXRAD", cat:"sensor",
+    subtitle:"160-site national radar network",
+    desc:"The Weather Surveillance Radar–1988 Doppler (WSR-88D) network comprises ~160 Doppler radar sites across the US and territories. Each unit transmits S-band microwave pulses and measures reflectivity (Z), radial velocity (Vr), spectrum width, and four dual-polarization variables (ZDR, ρHV, ΦDP, KDP). A full volume scan completes in 4–6 minutes. Raw Level-II polar-format data are archived at NOAA NCEI and distributed via LDM, AWS S3, and Google Cloud in near real-time.",
+    inputs:["Electromagnetic returns from precipitation"],
+    outputs:["Level-II: Z, Vr, ZDR, ρHV, ΦDP","Level-III products via RPG","MRMS national mosaics"],
+    future:"Phased Array Radar (PAR) is the planned NEXRAD successor, targeting ~30-second volume scans (vs 4–6 min today), dramatically improving temporal resolution for storm-scale DA.",
+    links:[
+      {title:"NEXRAD Radar Operations Center", url:"https://www.roc.noaa.gov/", icon:"📡"},
+      {title:"NOAA NCEI — NEXRAD Level-II Archive", url:"https://www.ncei.noaa.gov/products/radar/next-generation-weather-radar", icon:"🗄️"},
+      {title:"Unidata Level-II Radar Data", url:"https://www.unidata.ucar.edu/data/radar/levelii", icon:"📂"},
+      {title:"AWS NEXRAD Open Data", url:"https://registry.opendata.aws/noaa-nexrad/", icon:"☁️"},
+    ]},
+
+  { id:"GOES", label:"GOES-16/18/19\nABI + GLM", cat:"sensor",
+    subtitle:"NOAA geostationary satellite series",
+    desc:"The GOES-R series carries the Advanced Baseline Imager (ABI) with 16 spectral bands (visible, near-IR, IR). CONUS scans every 5 min; mesoscale sectors every 30–60 s. Raw Level-0 telemetry is processed by NOAA/NESDIS into calibrated Level-1b radiances and then Level-2 geophysical products. The Geostationary Lightning Mapper (GLM) detects lightning at 8-km/2-ms resolution. As of April 2025, GOES-19 is GOES East; GOES-18 is GOES West.",
+    inputs:["Solar/thermal radiation from atmosphere and surface"],
+    outputs:["L1b calibrated radiances (16 bands)","L2: CWP, CTH, Cloud Mask, stability indices","GLM lightning flash/group/event data"],
+    future:"GOES-19 replaced GOES-16 as GOES East in April 2025. The next-generation GeoXO constellation (~early 2030s) will add a hyperspectral sounder with 100s of channels, enabling near-radiosonde vertical resolution from geostationary orbit.",
+    links:[
+      {title:"GOES-R Series Official Site", url:"https://www.goes-r.gov/", icon:"🛰️"},
+      {title:"NOAA NESDIS GOES Data", url:"https://www.nesdis.noaa.gov/current-satellite-missions/currently-flying/geostationary-satellites", icon:"📡"},
+      {title:"AWS GOES-16/18 Open Data", url:"https://registry.opendata.aws/noaa-goes/", icon:"☁️"},
+      {title:"GOES-19 Transition to Operations", url:"https://www.goes-r.gov/users/transitionToOperations19.html", icon:"🔄"},
+      {title:"GeoXO Next-Gen Constellation", url:"https://www.nesdis.noaa.gov/next-generation/geoxo", icon:"🔭"},
+    ]},
+
+  { id:"POES", label:"Polar-Orbiting\nSatellites", cat:"sensor",
+    subtitle:"JPSS, MetOp, SNPP — microwave & IR sounders",
+    desc:"Low-Earth-orbit satellites (~850 km) provide global coverage with high vertical resolution at ~12-hour revisit. Key instruments: ATMS (22-channel microwave sounder, JPSS/NOAA-20/21), AMSU-A/MHS (NOAA-18/19, MetOp), CrIS (2211-channel hyperspectral IR, JPSS), IASI (MetOp, EUMETSAT). These sounders provide temperature and moisture profiles through clouds (microwave) and in clear skies (IR). Heavily used in GDAS; increasingly targeted for WoFS-MPAS via JEDI/CRTM.",
+    inputs:["Upwelling microwave & infrared radiation"],
+    outputs:["BUFR radiances → T, q profiles","Assimilated in GDAS, RAP, WoFS-MPAS (JEDI)"],
+    future:"NOAA-21 (JPSS-2) launched 2022. JPSS-3 and JPSS-4 will continue the constellation. JEDI/MPAS-JEDI enables microwave sounder assimilation in WoFS-MPAS, not currently possible with DART alone.",
+    links:[
+      {title:"NOAA JPSS Program", url:"https://www.nesdis.noaa.gov/current-satellite-missions/currently-flying/joint-polar-satellite-system", icon:"🛰️"},
+      {title:"EUMETSAT MetOp", url:"https://www.eumetsat.int/metop", icon:"🌍"},
+      {title:"ATMS Instrument — JPSS", url:"https://www.nesdis.noaa.gov/atms", icon:"📡"},
+    ]},
+
+  { id:"GNSSRO", label:"GNSS-RO\n(COSMIC-2 / Spire)", cat:"sensor",
+    subtitle:"GPS Radio Occultation — atmospheric profiles",
+    desc:"GNSS Radio Occultation measures atmospheric refractivity by tracking GPS signal bending as a low-Earth-orbit satellite rises or sets behind Earth's limb. Refractivity is directly related to temperature and moisture, providing high-vertical-resolution profiles (~200m). COSMIC-2 (6 LEO satellites, launched 2019) delivers ~5,000 profiles/day. Commercial providers (Spire Global, GeoOptics, PlanetiQ) add thousands more. Self-calibrating — requires no bias correction. Used in GDAS, RAP, and targeted for JEDI-MPAS.",
+    inputs:["GPS L1/L2 signal phase from GNSS constellations"],
+    outputs:["Bending angle / refractivity profiles","Assimilated via BUFR in GDAS, RAP"],
+    future:"Commercial GNSS-RO providers (Spire, GeoOptics) are rapidly expanding their constellations, potentially delivering 10,000+ profiles/day by the late 2020s — far exceeding radiosonde network density.",
+    links:[
+      {title:"COSMIC-2 (UCAR / NOAA)", url:"https://www.cosmic.ucar.edu/", icon:"🛰️"},
+      {title:"Spire Global GNSS-RO", url:"https://spire.com/weather/", icon:"📡"},
+      {title:"GNSS-RO at NOAA STAR", url:"https://www.star.nesdis.noaa.gov/gps/", icon:"🔬"},
+    ]},
+
+  { id:"RAOB", label:"Radiosondes\n(RAOBs)", cat:"sensor",
+    subtitle:"~900 global weather balloon sites, 00Z/12Z",
+    desc:"Weather balloon soundings launched twice daily from ~900 global sites (~90 in the US). Each balloon ascent (90 min) measures T, dew point, wind, and pressure from the surface to ~30 km. Despite infrequent launches, radiosondes remain the gold standard for tropospheric thermodynamic profiling and heavily anchor all DA systems. Data formatted as BUFR and ingested via PrepBUFR.",
+    inputs:["Direct in-situ measurement during balloon ascent"],
+    outputs:["T, Td, u, v, p profiles → PrepBUFR → all DA systems"],
+    future:"Enhanced radiosonde programs (e.g., targeted balloon releases during severe weather events) and commercial upper-air profiling are being explored to fill temporal and spatial gaps.",
+    links:[
+      {title:"NOAA Radiosonde Network", url:"https://www.weather.gov/upperair/", icon:"🎈"},
+      {title:"IGRA — Integrated Global Radiosonde Archive", url:"https://www.ncei.noaa.gov/products/weather-balloon/integrated-global-radiosonde-archive", icon:"🗄️"},
+      {title:"Wyoming Sounding Archive", url:"https://weather.uwyo.edu/upperair/sounding.html", icon:"📊"},
+    ]},
+
+  { id:"METAR", label:"ASOS / METAR\nSurface Network", cat:"sensor",
+    subtitle:"~1,000 automated US airport/NWS stations",
+    desc:"The Automated Surface Observing System (ASOS) and Aviation Weather Observing System (AWOS) form the US surface observation backbone. Reports include temperature, dew point, wind, altimeter setting, present weather, and visibility every 5 minutes (METAR format). Critical for boundary-layer analysis in WoFS DA — near-surface thermodynamic fields determine convective initiation.",
+    inputs:["Direct in-situ sensors at each station"],
+    outputs:["METAR text → PrepBUFR → WoFS DA, RAP, HRRR, GDAS"],
+    future:"",
+    links:[
+      {title:"NOAA ASOS Program", url:"https://www.weather.gov/asos/", icon:"🌡️"},
+      {title:"Iowa State Mesonet METAR Archive", url:"https://mesonet.agron.iastate.edu/request/download.phtml", icon:"📂"},
+    ]},
+
+  { id:"MESONET", label:"Oklahoma &\nNational Mesonet", cat:"sensor",
+    subtitle:"High-density 5-min surface obs",
+    desc:"The Oklahoma Mesonet (120 stations, 5-min data) provides the densest real-time surface observation network in the US — directly within the WoFS operational area. The National Mesonet Program aggregates thousands of additional sites from state networks, utilities, and commercial providers. Mesonet data are assimilated in both WoFS-WRF and WoFS-MPAS DA cycles and provide essential storm-environment surface analysis.",
+    inputs:["In-situ surface sensors (T, Td, wind, soil, radiation)"],
+    outputs:["5-min surface obs → WoFS DA, MRMS, NWS forecasters"],
+    future:"The National Mesonet is expanding coverage and standardization, with increasing data from commercial IoT weather sensors being quality-controlled and integrated.",
+    links:[
+      {title:"Oklahoma Mesonet", url:"https://www.mesonet.org/", icon:"🌾"},
+      {title:"NOAA National Mesonet Program", url:"https://www.weather.gov/organization/nmp", icon:"📡"},
+    ]},
+
+  { id:"ACARS", label:"Aircraft\nACARs / AMDAR", cat:"sensor",
+    subtitle:"In-flight T, wind from commercial aircraft",
+    desc:"ACARS (Aircraft Communications Addressing and Reporting System) and AMDAR (Aircraft Meteorological Data Relay) standardize meteorological reports from commercial aircraft. Each report includes temperature, wind speed and direction aloft, and sometimes humidity. Reports are generated during ascent, descent, and cruise, providing continuous middle- and upper-tropospheric observations along flight routes — filling a significant gap between radiosonde sites.",
+    inputs:["Aircraft flight management sensors"],
+    outputs:["BUFR reports → PrepBUFR → GDAS, RAP, HRRR, WoFS DA"],
+    future:"",
+    links:[
+      {title:"NOAA AMDAR Program", url:"https://amdar.noaa.gov/", icon:"✈️"},
+      {title:"WMO AMDAR", url:"https://community.wmo.int/en/activity-areas/aircraft-based-observations", icon:"🌐"},
+    ]},
+
+  // ── Raw Processing ─────────────────────────────────────────
+  { id:"RPG", label:"RPG\n(Radar Product Generator)", cat:"rawproc",
+    subtitle:"Level-II → Level-III products",
+    desc:"The Radar Product Generator processes Level-II base data into ~75 Level-III meteorological products including composite reflectivity, echo tops, vertically integrated liquid (VIL), storm-relative motion, and precipitation accumulations. Level-III data are more compact and display-ready. Distributed via NOAAPORT, RPCCDS, and public archives.",
+    inputs:["Level-II WSR-88D base data (Z, Vr, dual-pol)"],
+    outputs:["Level-III NEXRAD products → NWS ops, MRMS, public"],
+    future:"",
+    links:[
+      {title:"NEXRAD Level-III Products", url:"https://www.roc.noaa.gov/level-three-products.php", icon:"📊"},
+    ]},
+
+  { id:"L1B", label:"GOES L1b\nProcessing", cat:"rawproc",
+    subtitle:"Calibrate & geolocate ABI radiances",
+    desc:"NOAA/NESDIS processes raw GOES ABI telemetry into Level-1b — calibrated, geolocated radiances for all 16 ABI bands. Calibration uses on-board sources (solar diffuser, deep space view, internal blackbody). Geolocation uses spacecraft ephemeris, attitude data, and star tracker registration. Output is NetCDF4, refreshed every 5 min (CONUS) or 30–60 s (mesoscale). L1b is the primary satellite input for DA systems using CRTM forward operators.",
+    inputs:["Level-0 raw ABI telemetry"],
+    outputs:["L1b calibrated radiances (NetCDF4) → GDAS, HRRR DA, WoFS-MPAS JEDI"],
+    future:"GOES-19 is now providing L1b data as GOES East. GeoXO will deliver next-generation L1b with more channels and improved calibration in the 2030s.",
+    links:[
+      {title:"GOES-R ABI L1b Product", url:"https://www.goes-r.gov/products/overview-of-abi-products.html", icon:"📡"},
+      {title:"NOAA CLASS Archive", url:"https://www.avl.class.noaa.gov/saa/products/welcome", icon:"🗄️"},
+    ]},
+
+  { id:"L2GOES", label:"GOES L2\nProducts", cat:"rawproc",
+    subtitle:"Cloud Mask, CWP, CTH, stability indices",
+    desc:"NOAA STAR algorithms process GOES L1b radiances into geophysical Level-2 products: Cloud Mask (ACM), Cloud Top Height (ACHA), Cloud Top Temperature, Cloud Water Path (CWP), Derived Stability Indices (K-index, LI, CAPE proxies), and Clear-Sky Radiances. CWP and clear-sky radiances are the primary GOES inputs to WoFS-WRF DA via GSI. L2 products require less forward-modeling overhead than L1b but contain less raw information.",
+    inputs:["GOES L1b calibrated radiances"],
+    outputs:["CWP, CTH, Cloud Mask, stability indices → WoFS-WRF GSI DA"],
+    future:"JEDI/MPAS-JEDI can assimilate L1b all-sky radiances directly, bypassing the L2 retrieval step and preserving more observational information — particularly in cloudy and precipitating conditions.",
+    links:[
+      {title:"NOAA STAR GOES-R ABI Products", url:"https://www.star.nesdis.noaa.gov/goesr/products.php", icon:"☁️"},
+      {title:"GOES-R Product Algorithm ATBDs", url:"https://www.goes-r.gov/resources/docs.html", icon:"📄"},
+    ]},
+
+  { id:"BUFR", label:"PrepBUFR /\nIODA Processing", cat:"rawproc",
+    subtitle:"QC & format conventional obs for DA",
+    desc:"Before entering any DA system, conventional observations (radiosondes, METAR, ACARS, profilers, buoys) go through NCEP's quality-control and formatting pipeline, producing PrepBUFR files — a standardized binary format containing observations, first-guess (O-B) departures, and QC flags. PrepBUFR is the universal obs interface for GSI-based systems (GDAS, RAP, HRRR, WoFS-WRF). JEDI-based systems (MPAS-JEDI) use the IODA (Interface for Observation Data Access) NetCDF format instead.",
+    inputs:["METARs, RAOBs, ACARS, profilers, buoys (raw ASCII/BUFR)"],
+    outputs:["PrepBUFR files → GDAS, RAP, HRRR, WoFS-WRF GSI\nIODA NetCDF → WoFS-MPAS JEDI"],
+    future:"IODA (JEDI obs format) is the strategic successor to PrepBUFR within NOAA's DA modernization effort. All JEDI-based operational systems will eventually use IODA.",
+    links:[
+      {title:"NCEP PrepBUFR Documentation", url:"https://www.emc.ncep.noaa.gov/mmb/data_processing/prepbufr.doc/document.htm", icon:"📄"},
+      {title:"JCSDA IODA Documentation", url:"https://jointcenterforsatellitedataassimilation-jedi-docs.readthedocs-hosted.com/en/latest/inside/jedi-components/ioda/", icon:"📂"},
+    ]},
+
+  { id:"MRMS", label:"MRMS", cat:"rawproc",
+    subtitle:"Multi-Radar Multi-Sensor — national mosaics",
+    desc:"MRMS (Multi-Radar Multi-Sensor) is a NSSL/NCEP system that fuses all 160 WSR-88D radars plus rain gauges, satellite data, and model output into seamless, 1-km / 2-minute national-coverage gridded products. Key products: composite and column-maximum reflectivity, dual-pol QPE (merging radar and gauges), precipitation type, severe weather rotation tracks, and hail swaths. MRMS is the primary gateway for radar data into WoFS DA — both WoFS-WRF (via GSI) and WoFS-MPAS (via DART/JEDI) ingest MRMS gridded reflectivity and radial velocity.",
+    inputs:["Level-II/III WSR-88D data (160 radars)","Rain gauges (COOP, CoCoRaHS)","GOES GLM lightning","NWP model output (for QPE blending)"],
+    outputs:["Composite reflectivity, QPE, PrecipType","Rotation tracks, hail swaths","→ WoFS-WRF DA, WoFS-MPAS DA, NWS operations, verification"],
+    future:"Faster volume scans from PAR will enable MRMS to update much more frequently than today's ~2-minute refresh rate.",
+    links:[
+      {title:"NSSL MRMS Project", url:"https://www.nssl.noaa.gov/projects/mrms/", icon:"🗺️"},
+      {title:"NCEP MRMS Products", url:"https://www.nssl.noaa.gov/projects/mrms/operational/", icon:"📊"},
+      {title:"AWS MRMS Open Data", url:"https://registry.opendata.aws/noaa-mrms-qpe/", icon:"☁️"},
+    ]},
+
+  // ── Static / Ancillary ─────────────────────────────────────
+  { id:"TERRAIN", label:"Terrain / DEM\n(GTOPO30/SRTM)", cat:"static",
+    subtitle:"Global digital elevation models",
+    desc:"Digital elevation models (GTOPO30 at 30-arcsecond / ~1 km, GMTED2010, or SRTM) define the topography of the WRF/MPAS model domain. Processed by WRF's geogrid or MPAS's init_atmosphere onto the model grid. Terrain drives orographic lifting, flow blocking, and valley channeling. For WoFS's central-US domain, the terrain of the Southern Plains, Rockies foothills, and Ozarks all influence storm initiation and evolution.",
+    inputs:["GTOPO30, GMTED2010, SRTM static raster files"],
+    outputs:["Gridded terrain height on model domain → WRF initial/BC files, MPAS mesh"],
+    future:"",
+    links:[
+      {title:"USGS GTOPO30", url:"https://www.usgs.gov/centers/eros/science/usgs-eros-archive-digital-elevation-global-30-arc-second-elevation-gtopo30", icon:"🏔️"},
+      {title:"SRTM (NASA/USGS)", url:"https://www.earthdata.nasa.gov/sensors/srtm", icon:"🛰️"},
+    ]},
+
+  { id:"LANDUSE", label:"Land Use / Land Cover\n(MODIS / USGS)", cat:"static",
+    subtitle:"Surface classification for land-surface model",
+    desc:"Land use / land cover (LULC) datasets classify each model grid cell by surface type (cropland, forest, urban, water, grassland, etc.). MODIS 21-category and USGS 24-category products are most common in WRF. LULC drives the land-surface model's partitioning of sensible and latent heat fluxes — critical for accurately representing the planetary boundary layer moisture that fuels convection in WoFS domains.",
+    inputs:["MODIS MCD12Q1, USGS NLCD, or custom LULC rasters"],
+    outputs:["LANDUSEF fraction arrays → WRF/MPAS land-surface model"],
+    future:"",
+    links:[
+      {title:"MODIS Land Cover (NASA LAADS)", url:"https://lpdaac.usgs.gov/products/mcd12q1v061/", icon:"🌍"},
+      {title:"USGS NLCD", url:"https://www.usgs.gov/centers/eros/science/national-land-cover-database", icon:"🗺️"},
+    ]},
+
+  { id:"SST", label:"Sea Surface Temperature\n(RTG-SST / OI-SST)", cat:"static",
+    subtitle:"Daily SST lower boundary condition",
+    desc:"Sea Surface Temperature analyses (NOAA RTG-SST at 1/12°, or GHRSST/OI-SST) provide the ocean lower boundary condition for WRF and MPAS. Although WoFS focuses on the continental US, the Gulf of Mexico SST directly influences the warm, moist boundary-layer inflow that fuels Great Plains severe weather. Updated daily and ingested during WPS/MPAS pre-processing.",
+    inputs:["Satellite SST retrievals (GOES, AVHRR, VIIRS) + buoy merging"],
+    outputs:["Daily SST grid → WRF/MPAS lower boundary condition"],
+    future:"",
+    links:[
+      {title:"NOAA RTG-SST", url:"https://polar.ncep.noaa.gov/sst/", icon:"🌊"},
+      {title:"GHRSST (Copernicus)", url:"https://www.ghrsst.org/", icon:"🛰️"},
+    ]},
+
+  // ── Global Models ──────────────────────────────────────────
+  { id:"GDAS", label:"GDAS\n(Global DA System)", cat:"global",
+    subtitle:"GFS initialization — GSI Hybrid 4DEnVar, 6-hourly",
+    desc:"The Global Data Assimilation System (GDAS) initializes GFS via a 6-hourly cycling GSI Hybrid 4D-Ensemble-Variational (4DEnVar) scheme. It ingests the largest and most diverse observation dataset of any NOAA DA system: satellite radiances from 100+ sensors, radiosondes, aircraft, surface stations, GNSS-RO, scatterometers, AMVs, and more. GDAS balances static and flow-dependent (ensemble-derived) background error covariances. Output analysis fields initialize GFS and provide the background for the next GDAS cycle.",
+    inputs:["All PrepBUFR conventional obs","Satellite radiances (100+ sensors)","GNSS-RO, AMVs, scatterometers","Previous 6-hr GFS forecast (background)"],
+    outputs:["GFS initial conditions (global analysis, ~13 km)","GEFS ensemble perturbations","Background for HRRR, RAP via GFS LBCs"],
+    future:"Long-term NOAA strategy is to replace GSI with JEDI-based DA for GFS/GDAS. JEDI-GFS is under active development at JCSDA/EMC.",
+    links:[
+      {title:"NCEI GDAS Archive", url:"https://www.ncei.noaa.gov/products/weather-climate-models/global-data-assimilation", icon:"🗄️"},
+      {title:"NOAA EMC GFS Overview", url:"https://www.emc.ncep.noaa.gov/emc/pages/numerical_forecast_systems/gfs.php", icon:"🌍"},
+      {title:"GSI Users Guide (DTC)", url:"https://dtcenter.org/community-code/gridpoint-statistical-interpolation-gsi/documentation", icon:"📄"},
+    ]},
+
+  { id:"GFS", label:"GFS / FV3-GFS\nGlobal Forecast System", cat:"global",
+    subtitle:"NOAA primary global NWP — FV3, ~13 km, 4× daily",
+    desc:"The Global Forecast System (GFS) uses the FV3 (Finite-Volume Cubed-Sphere) dynamical core — adopted in 2019 as NOAA's Unified Forecast System (UFS) standard. FV3 uses a finite-volume discretization on a cubed-sphere grid (6 equal-area faces) with a Lagrangian vertical coordinate that remaps to Eulerian each time step, providing excellent mass and energy conservation and high parallel scalability. GFS runs at ~13 km to 16 days, 4×/day. By using FV3 at all scales, NOAA can share physics, DA frameworks, and infrastructure between GFS and RRFS — a key design goal of UFS. The root of the WoFSCast chain via GFS → RAP → HRRR → HRRRe → WoFS-WRF, and GFS → GEFS → WoFS-MPAS.",
+    inputs:["GDAS analysis (initial conditions)","Previous GFS forecast (background)"],
+    outputs:["GRIB2 global analyses & forecasts → RAP/HRRR BCs","→ GEFS ensemble perturbation base"],
+    future:"AI successors AIGFS (NOAA EAGLE) and AIFS (ECMWF) may supplement or replace GFS as the global BC source for WoFS. RRFSv1 uses the same FV3 core, extending the UFS standard to 3-km regional NWP.",
+    links:[
+      {title:"NOAA EMC GFS Documentation", url:"https://www.emc.ncep.noaa.gov/emc/pages/numerical_forecast_systems/gfs.php", icon:"🌍"},
+      {title:"NOMADS GFS Data", url:"https://nomads.ncep.noaa.gov/", icon:"📡"},
+      {title:"AWS GFS Open Data", url:"https://registry.opendata.aws/noaa-gfs-bdp-pds/", icon:"☁️"},
+      {title:"FV3 Dynamical Core (GFDL)", url:"https://www.gfdl.noaa.gov/fv3/", icon:"🔬"},
+      {title:"UFS Weather Model (GitHub)", url:"https://github.com/ufs-community/ufs-weather-model", icon:"💻"},
+    ]},
+
+  { id:"GEFS", label:"GEFS\n(Global Ensemble)", cat:"global",
+    subtitle:"30-member global ensemble, ~25 km",
+    desc:"The Global Ensemble Forecast System (GEFS) provides 30 perturbed members plus a control at ~25 km resolution, to 35 days. Ensemble perturbations are generated using the Ensemble Kalman Filter (EnKF) and stochastic physics. GEFS is the source of ensemble lateral boundary condition perturbations for WoFS-MPAS, giving each of the 36 MPAS members a unique large-scale environmental forcing. This is a key structural difference from WoFS-WRF, which uses the deterministic HRRRe for BCs.",
+    inputs:["GFS analysis + EnKF perturbations"],
+    outputs:["30-member global ensemble BCs → WoFS-MPAS lateral BCs"],
+    future:"AIGEFS (AI Global Ensemble Forecast System, NOAA EAGLE) went operational Dec 2025 as a parallel AI ensemble. REFS (Rapid Ensemble Forecast System) will replace regional ensemble products alongside RRFS in Oct 2026.",
+    links:[
+      {title:"NOAA EMC GEFS", url:"https://www.emc.ncep.noaa.gov/emc/pages/numerical_forecast_systems/ens.php", icon:"🌐"},
+      {title:"AWS GEFS Open Data", url:"https://registry.opendata.aws/noaa-gefs/", icon:"☁️"},
+    ]},
+
+  { id:"ERA5", label:"ERA5 Reanalysis\n(ECMWF)", cat:"global",
+    subtitle:"Gold-standard ML training data, 1940–present",
+    desc:"ERA5 is ECMWF's fifth-generation global atmospheric reanalysis, covering 1940 to present at ~31 km / 137 vertical levels / hourly resolution. Produced by running ECMWF's IFS in 4D-Var reanalysis mode against the full historical observation archive. ERA5 is the foundational training dataset for virtually all major AI weather models: GraphCast, Pangu-Weather, FourCastNet, AIFS, NOAA AIGFS, and WoFSCast all depend on ERA5. Freely available from the Copernicus Climate Change Service.",
+    inputs:["Full historical observation archive (1940–present)","ECMWF IFS model + 4D-Var DA"],
+    outputs:["31-km hourly global atmospheric state → ML training for WoFSCast, AIGFS, AIFS, GraphCast, etc."],
+    future:"ECMWF continues to extend ERA5 to the present. ERA6 (next reanalysis generation) is in planning stages. ERA5 data access remains free through Copernicus CDS.",
+    links:[
+      {title:"ERA5 — Copernicus CDS", url:"https://cds.climate.copernicus.eu/datasets/reanalysis-era5-pressure-levels", icon:"🌍"},
+      {title:"ERA5 Documentation (ECMWF)", url:"https://www.ecmwf.int/en/forecasts/dataset/ecmwf-reanalysis-v5", icon:"📄"},
+      {title:"ERA5 on AWS", url:"https://registry.opendata.aws/ecmwf-era5/", icon:"☁️"},
+    ]},
+
+  { id:"IFS_AIFS", label:"ECMWF IFS & AIFS", cat:"global",
+    subtitle:"World's best NWP + operational AI forecast (Feb 2025)",
+    desc:"ECMWF's Integrated Forecasting System (IFS) is widely considered the world's highest-skill global NWP model, initialized via 4D-Var DA. AIFS (AI Forecasting System) is its operational AI counterpart, using a GNN+transformer architecture trained on ERA5 and IFS analyses. AIFS Single (deterministic) became operational Feb 2025; AIFS ENS (ensemble) in July 2025. Both are freely available under CC-BY-4.0 licensing. AIFS could serve as an alternative global BC source for WoFS, and ERA5 is already the backbone of WoFSCast training data.",
+    inputs:["ERA5 + IFS analyses (AIFS training)","Global obs via ECMWF 4D-Var (IFS initialization)"],
+    outputs:["Global deterministic & ensemble forecasts ~28 km","Free CC-BY-4.0 data via ECMWF open-data portal"],
+    future:"AIFS v2 (Single + ENS) became operational May 2026. ECMWF is exploring AIFS-based downscaling for regional/convective scales, which could eventually interface with WoFS-type systems.",
+    links:[
+      {title:"ECMWF AIFS Overview", url:"https://www.ecmwf.int/en/forecasts/documentation-and-support/aifs", icon:"🤖"},
+      {title:"AIFS Open Data", url:"https://www.ecmwf.int/en/forecasts/dataset/aifs-machine-learning-data", icon:"☁️"},
+      {title:"AIFS Paper (GMD 2026)", url:"https://gmd.copernicus.org/articles/19/4703/2026/", icon:"📄"},
+      {title:"ECMWF Open Data Portal", url:"https://www.ecmwf.int/en/forecasts/datasets/open-data", icon:"📂"},
+    ]},
+
+  // ── Regional Models ────────────────────────────────────────
+  { id:"RAP", label:"RAP\n(Rapid Refresh, 13 km)", cat:"regional",
+    subtitle:"Hourly mesoscale analysis & forecast — WRF-ARW dycore",
+    desc:"The Rapid Refresh uses the WRF-ARW (Advanced Research WRF) dynamical core — a non-hydrostatic finite-difference solver on a structured Arakawa-C grid with terrain-following η coordinate. WRF-ARW uses a time-split integration (Klemp–Wilhelmson) separating fast acoustic modes from slow meteorological modes. It runs at 13-km resolution, cycling hourly with GSI Hybrid 3DEnVar DA. RAP provides lateral BCs to HRRR and first-guess fields for HRRR assimilation. Retired October 6, 2026.",
+    inputs:["GFS LBCs","PrepBUFR conventional obs","MRMS, GOES radiances","GNSS-RO, aircraft"],
+    outputs:["13-km hourly analyses → HRRR ICs & BCs","0–51 hr CONUS forecasts (GRIB2)"],
+    future:"RETIRED October 6, 2026 — replaced by RRFSv1 (FV3 dycore, 3 km, UFS-compliant). WRF-ARW exits the ops chain entirely.",
+    links:[
+      {title:"NOAA RAP Homepage", url:"https://rapidrefresh.noaa.gov/", icon:"🌪️"},
+      {title:"RAP/HRRR on NOMADS", url:"https://nomads.ncep.noaa.gov/#HRRR", icon:"📡"},
+      {title:"Benjamin et al. (2016) — RAP paper", url:"https://journals.ametsoc.org/view/journals/mwre/144/4/mwr-d-15-0242.1.xml", icon:"📄"},
+      {title:"WRF-ARW Technical Note", url:"https://www2.mmm.ucar.edu/wrf/users/docs/technote/v4_technote.pdf", icon:"🔬"},
+    ]},
+
+  { id:"HRRR", label:"HRRR\n(3 km, WRF-ARW)", cat:"regional",
+    subtitle:"Convection-allowing hourly NWP — WRF-ARW dycore",
+    desc:"The High-Resolution Rapid Refresh runs the WRF-ARW dynamical core at 3-km, the same core as RAP but at convection-allowing scale where explicit deep convection replaces cumulus parameterization. Uses GSI Hybrid EnVar DA with an additional 15-min radar reflectivity nudging sub-cycle that directly assimilates MRMS reflectivity for convective spinup. WRF-ARW's large physics library (Thompson microphysics, MYJ/MYNN PBL, RUC land surface) makes it the community standard for convection research. HRRR analyses flow through HRRRe into WoFS-WRF, making WRF-ARW the dominant dycore in WoFSCast's training ancestry. Retired October 6, 2026.",
+    inputs:["RAP analyses (ICs/BCs/background)","MRMS reflectivity & radial velocity (15-min radar DA)","GOES L2 radiances, PrepBUFR conventionals"],
+    outputs:["3-km hourly analyses → HRRRe","0–48 hr CONUS forecasts (GRIB2/NetCDF)"],
+    future:"RETIRED October 6, 2026 — replaced by RRFSv1 (FV3 core, 3 km, North America). FV3 is not WRF-ARW; physics porting and evaluation is a major transition challenge for RRFS.",
+    links:[
+      {title:"NOAA HRRR Homepage", url:"https://rapidrefresh.noaa.gov/hrrr/", icon:"🌪️"},
+      {title:"AWS HRRR Open Data", url:"https://registry.opendata.aws/noaa-hrrr-pds/", icon:"☁️"},
+      {title:"HRRR on NOMADS", url:"https://nomads.ncep.noaa.gov/#HRRR", icon:"📡"},
+      {title:"WRF Model Users (NCAR/MMM)", url:"https://www2.mmm.ucar.edu/wrf/users/", icon:"🔬"},
+    ]},
+
+  { id:"HRRRE", label:"HRRRe\n(HRRR-Ensemble, 6 members)", cat:"regional",
+    subtitle:"3-km ensemble ICs & BCs for WoFS-WRF",
+    desc:"The HRRRe is a 6-member ensemble at 3-km resolution derived from HRRR. Despite having far fewer members than WoFS (36), HRRRe is the only 3-km convection-allowing ensemble product available in real time at HRRR update frequency. It serves as the IC/BC source for WoFS-WRF — each WoFS-WRF member draws ICs/BCs from a combination of HRRRe members, supplemented by perturbations applied during WoFS DA cycling. Retired with HRRR in October 2026; successor is REFS.",
+    inputs:["HRRR analyses + ensemble perturbations"],
+    outputs:["6-member 3-km ensemble → WoFS-WRF initial & lateral BCs"],
+    future:"RETIRED October 6, 2026 alongside HRRR. Replaced by REFS (Rapid Ensemble Forecast System, FV3-based) as WoFS boundary condition source.",
+    links:[
+      {title:"HRRRe on NOMADS", url:"https://nomads.ncep.noaa.gov/", icon:"📡"},
+    ]},
+
+  // ── WoFS NWP ───────────────────────────────────────────────
+  { id:"WPS", label:"WRF Pre-processing\nSystem (WPS)", cat:"wofs",
+    subtitle:"geogrid → ungrib → metgrid",
+    desc:"WPS prepares WRF model inputs in three steps: (1) geogrid interpolates static geographic datasets (terrain, land use, soil) onto the WRF domain grid; (2) ungrib decodes GRIB2 meteorological fields from GFS or HRRRe; (3) metgrid horizontally interpolates the met fields onto the WRF domain, producing met_em NetCDF files that WRF's real.exe reads to build initial and lateral boundary condition files. This pre-processing produces the 'first guess' state that WoFS DA then updates with real observations.",
+    inputs:["GTOPO30 terrain, MODIS land use, STATSGO soil","HRRRe GRIB2 (met fields)","SST analysis"],
+    outputs:["met_em NetCDF files → WRF wrfinput / wrfbdy (ICs & BCs)"],
+    future:"WPS will be replaced by equivalent FV3/RRFS pre-processing utilities when WoFS transitions to RRFS BCs in 2026–2027.",
+    links:[
+      {title:"WPS User's Guide (WRF GitHub)", url:"https://github.com/wrf-model/Users_Guide", icon:"📄"},
+      {title:"WRF Download & Documentation", url:"https://www2.mmm.ucar.edu/wrf/users/", icon:"🌐"},
+    ]},
+
+  { id:"MPAS_PREP", label:"MPAS\nPre-processing", cat:"wofs",
+    subtitle:"init_atmosphere, LBC processor, static fields",
+    desc:"MPAS uses init_atmosphere to convert meteorological GRIB2 fields onto the unstructured Voronoi mesh and interpolate static fields. A separate LBC processor generates lateral boundary condition files from GEFS members (updated every 3 hours). The Voronoi mesh itself is a pre-computed static file. Primary BC source is GFS+GEFS; HRRR is also used for improved storm-scale ICs. RRFSv1/REFS is being tested experimentally as a replacement BC source (higher resolution, better physics) and is expected to become the primary source once RRFS is operational and validated for WoFS use.",
+    inputs:["GFS/GEFS GRIB2 analyses (primary ICs & LBCs)","HRRR GRIB2 (supplemental storm-scale ICs)","RRFSv1/REFS GRIB2 (experimental ICs & LBCs — replaces GFS+HRRR post-2026)","GTOPO30 terrain, MODIS land use","MPAS static mesh definition file"],
+    outputs:["MPAS init.nc (initial conditions)","MPAS lbc.nc files (lateral BCs from GEFS/REFS members)"],
+    future:"RRFSv1/REFS is the planned primary BC source for WoFS-MPAS after Oct 2026 — currently being evaluated experimentally. RRFSv2 (MPAS dycore) will be a natural fit for seamless MPAS-to-MPAS BC coupling.",
+    links:[
+      {title:"MPAS-Atmosphere User's Guide", url:"https://www2.mmm.ucar.edu/projects/mpas/mpas_atmosphere_users_guide_8.0.pdf", icon:"📄"},
+      {title:"MPAS Project (NCAR/LANL)", url:"https://mpas-dev.github.io/", icon:"🌐"},
+    ]},
+
+  { id:"WoFSWRF_DA", label:"WoFS-WRF DA\n(GSI-EnKF, 15 min)", cat:"wofs",
+    subtitle:"36-member EnKF, 15-min rapid-update cycle",
+    desc:"WoFS-WRF data assimilation uses the Gridpoint Statistical Interpolation (GSI) system configured as an Ensemble Kalman Filter, cycling every 15 minutes. The EnKF updates all 36 WRF ensemble members simultaneously using flow-dependent background error covariances — meaning the observation-to-state influence changes dynamically based on whether a storm is present. Key observations per 15-min cycle: MRMS composite reflectivity and radial velocity, GOES L2 CWP and clear-sky radiances, PrepBUFR conventionals, and Mesonet surface obs.",
+    inputs:["MRMS reflectivity & radial velocity","GOES L2 CWP & radiances","PrepBUFR conventional obs","Mesonet surface obs","Previous WRF ensemble (background)","HRRRe ICs/BCs (updated ~1–3 hr)"],
+    outputs:["Updated 36-member WRF ensemble analysis → WRF forecast"],
+    future:"GSI will be superseded by JEDI-based DA in the long-term NOAA roadmap. WoFS-WRF will eventually transition to RRFS/REFS BCs when HRRRe retires (Oct 2026).",
+    links:[
+      {title:"NSSL WoFS Overview", url:"https://www.nssl.noaa.gov/projects/wof/", icon:"🌩️"},
+      {title:"WoFS Configuration", url:"https://wof.nssl.noaa.gov/configuration.php", icon:"⚙️"},
+      {title:"GSI Documentation (DTC)", url:"https://dtcenter.org/community-code/gridpoint-statistical-interpolation-gsi", icon:"📄"},
+    ]},
+
+  { id:"WoFSWRF_ENS", label:"WoFS-WRF Ensemble\n(36 members, 3 km)", cat:"wofs",
+    subtitle:"WRF-ARW, ~900×900 km, 5-min output",
+    desc:"The WoFS-WRF ensemble runs 36 WRF-ARW members at 3-km grid spacing over a ~900×900 km domain focused on the threatened area. Each member uses a different combination of microphysics (Thompson, NSSL 2-moment), PBL (MYJ, YSU, MYNN), and land-surface schemes, plus stochastic parameter perturbations (SPPT, SKEB). Ensemble spread from physics diversity and DA-driven IC perturbations represents forecast uncertainty. WRFOUT files (NetCDF, every 5 min) are the primary input for both WoFSCast training archives and real-time inference.",
+    inputs:["Updated WoFS DA analysis (ICs every 15 min)","HRRRe lateral BCs"],
+    outputs:["WRFOUT NetCDF every 5 min (~50 variables, multiple levels)","→ WoFSCast training archive & real-time inference"],
+    future:"WoFS-WRF is the established system with the longest training data archive. Will transition to RRFS/REFS BCs when HRRRe retires. May eventually be supplanted by WoFS-MPAS as the primary WoFS NWP system.",
+    links:[
+      {title:"NSSL WoFS System Description", url:"https://www.nssl.noaa.gov/projects/wof/overview.php", icon:"🌩️"},
+      {title:"WoFS WRFOUT Archive (NSSL)", url:"https://wof.nssl.noaa.gov/", icon:"🗄️"},
+    ]},
+
+  { id:"DART_DA", label:"WoFS-MPAS DA\n(DART/EAKF, 15 min)", cat:"wofs",
+    subtitle:"Primary DA for MPAS — NCAR DART framework",
+    desc:"NCAR's Data Assimilation Research Testbed (DART) using the Ensemble Adjustment Kalman Filter (EAKF) is the primary DA system for WoFS-MPAS. EAKF is a deterministic EnKF variant that avoids sampling noise by analytically adjusting ensemble member increments. Assimilates the same core observations as WoFS-WRF's GSI-EnKF: MRMS radar, GOES L2, PrepBUFR conventionals, Mesonet. Runs every 15 minutes over the same domain.",
+    inputs:["MRMS reflectivity & radial velocity","GOES L2 CWP","PrepBUFR conventionals","Mesonet surface obs","Previous MPAS ensemble (background)"],
+    outputs:["Updated 36-member MPAS ensemble analysis"],
+    future:"DART/EAKF is the stable, production-ready path. Will coexist with JEDI/MPAS-JEDI (experimental) for the near term. Long-term NOAA convergence toward JEDI may eventually make DART secondary.",
+    links:[
+      {title:"NCAR DART Project", url:"https://dart.ucar.edu/", icon:"🔬"},
+      {title:"DART for MPAS", url:"https://dart.ucar.edu/research/mpas/", icon:"📄"},
+      {title:"DART Documentation", url:"https://docs.dart.ucar.edu/", icon:"📚"},
+    ]},
+
+  { id:"JEDI_DA", label:"WoFS-MPAS DA\n(JEDI/MPAS-JEDI) ⚡", cat:"wofs", experimental:true,
+    subtitle:"Experimental — JCSDA next-gen DA framework",
+    desc:"JEDI (Joint Effort for Data assimilation Integration) is NOAA/JCSDA's next-generation DA framework — model-agnostic, cloud-portable, and built for modern heterogeneous computing. MPAS-JEDI connects JEDI's observation operators and minimization to MPAS. Key capabilities not available in DART: full all-sky radiance assimilation via CRTM (including in-cloud GOES pixels), microwave sounder radiance DA (AMSU-A, ATMS), GNSS-RO with high-quality forward operators, and 4DEnVar/EDA algorithms. Uses IODA NetCDF observation format.",
+    inputs:["MRMS radar","GOES L1b all-sky radiances (via CRTM)","Microwave sounder radiances (ATMS, AMSU-A)","GNSS-RO refractivity","PrepBUFR/IODA conventionals"],
+    outputs:["Updated MPAS ensemble analysis (experimental path)"],
+    future:"JEDI is NOAA's strategic DA framework. RRFS is expected to use a JEDI-based DA system, making JEDI the first operationally used JEDI system. WoFS-MPAS JEDI production use depends on computational readiness and verification at NSSL/CIWRO.",
+    links:[
+      {title:"JCSDA JEDI Homepage", url:"https://www.jcsda.org/jedi", icon:"🔬"},
+      {title:"JEDI-MPAS Documentation", url:"https://www.jcsda.org/jedi-mpas", icon:"📄"},
+      {title:"JEDI Docs (ReadTheDocs)", url:"https://jointcenterforsatellitedataassimilation-jedi-docs.readthedocs-hosted.com/en/latest/", icon:"📚"},
+      {title:"MPAS-JEDI Paper (Liu et al. 2022)", url:"https://gmd.copernicus.org/articles/15/7859/2022/gmd-15-7859-2022.html", icon:"📄"},
+    ]},
+
+  { id:"WoFSMPAS_ENS", label:"WoFS-MPAS Ensemble\n(36 members, 3 km)", cat:"wofs", experimental:true,
+    subtitle:"MPAS Voronoi mesh, 5-min output — experimental",
+    desc:"WoFS-MPAS runs 36 MPAS members at 3-km mesh spacing using an unstructured Voronoi (hexagonal) grid that reduces boundary artifacts vs. WRF nested grids. Physics perturbations mirror WoFS-WRF. Boundary conditions per member come from GEFS ensemble perturbations (primary) or, experimentally, from RRFSv1/REFS (higher-resolution 3-km BCs that better match the WoFS-MPAS mesh scale). The transition from GEFS to REFS BCs is a key step being evaluated for the 2026+ operational configuration.",
+    inputs:["DART/EAKF or JEDI analysis (ICs)","GEFS lateral BCs (primary, updated every 3 hr)","RRFSv1/REFS lateral BCs (experimental — 3-km ensemble, replaces GEFS post-2026)"],
+    outputs:["MPAS output NetCDF every 5 min → WoFSCast training & inference"],
+    future:"WoFS-MPAS is the planned long-term successor to WoFS-WRF. As RRFSv1/REFS becomes the validated BC source and JEDI DA matures, WoFS-MPAS will transition toward operational status.",
+    links:[
+      {title:"WoFS-MPAS Development (NSSL AMS 2024)", url:"https://ams.confex.com/ams/104ANNUAL/webprogram/Paper438307.html", icon:"📄"},
+      {title:"Preliminary MPAS-WoFS Results (NCAR 2024)", url:"https://files.mmm.ucar.edu/events/workshops/wrf-mpas/2024/preliminary-results-from-an-experimental-warn-on-forecast-system.pdf", icon:"📊"},
+    ]},
+
+  // ── ML / WoFSCast ──────────────────────────────────────────
+  { id:"TRAIN_PIPE", label:"WoFSCast\nTraining Pipeline", cat:"ml",
+    subtitle:"Offline preprocessing of historical WoFS archives",
+    desc:"WoFSCast is trained entirely on historical WoFS model output — it never ingests raw observations directly. The training pipeline: (1) select ~50 atmospheric variables across vertical levels; (2) regrid from WRF/MPAS native grid to an icosahedral mesh; (3) normalize each variable (zero mean, unit variance) using training-set statistics; (4) construct adjacent-timestep input→target pairs; (5) build graph edge weights and connectivity on the icosahedral mesh. Output is stored as TFRecords or Zarr tensors.",
+    inputs:["Multi-season WoFS-WRF WRFOUT archives","Multi-season WoFS-MPAS output archives"],
+    outputs:["Normalized input/target tensor pairs (TFRecords/Zarr)","Icosahedral graph mesh definition"],
+    future:"Future versions will incorporate WoFS-RRFS output (FV3-based) as HRRR/HRRRe-driven WoFS archives are superseded. 1-km training data will require higher-resolution WoFS NWP runs.",
+    links:[
+      {title:"WoFSCast GitHub (NOAA-NSSL)", url:"https://github.com/NOAA-National-Severe-Storms-Laboratory/frdd-wofs-cast", icon:"💻"},
+      {title:"WoFSCast Paper (GRL 2024)", url:"https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2024GL112383", icon:"📄"},
+    ]},
+
+  { id:"GNN_MODEL", label:"WoFSCast GNN Model\n(GraphCast-style)", cat:"ml",
+    subtitle:"Encoder–Processor–Decoder message-passing GNN",
+    desc:"WoFSCast uses a GraphCast-style Graph Neural Network: an Encoder maps atmospheric fields to latent node representations on the icosahedral mesh; a Processor applies multiple rounds of message-passing (information propagates between neighboring nodes); a Decoder maps latent representations back to grid-point output fields. The architecture is identical in form to NOAA AIGFS and Google DeepMind's GraphCast. Trained with a multi-step MSE loss over auto-regressive rollouts. Generates a 3+ hr forecast in ~30 seconds on one GPU vs ~10 min on 1,100 CPUs for equivalent NWP.",
+    inputs:["Normalized atmospheric state tensors from training pipeline","Icosahedral graph structure (nodes, edges, edge features)"],
+    outputs:["Trained model weights (checkpoint files)","→ Real-time inference via frozen model"],
+    future:"Future WoFSCast architectures will likely include diffusion-based generative models (GenCast-style) for better probabilistic ensemble generation, and transformer components for global context. 1-km and 6+ hr targets in development.",
+    links:[
+      {title:"WoFSCast GitHub (NOAA-NSSL)", url:"https://github.com/NOAA-National-Severe-Storms-Laboratory/frdd-wofs-cast", icon:"💻"},
+      {title:"WoFSCast Paper (GRL 2024)", url:"https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2024GL112383", icon:"📄"},
+      {title:"GraphCast Paper (DeepMind)", url:"https://www.science.org/doi/10.1126/science.adi2336", icon:"📄"},
+      {title:"NOAA EPIC WoFSCast", url:"https://epic.noaa.gov/wofscast-a-graphcast-based-emulator-for-the-warn-on-forecast-system/", icon:"🦅"},
+    ]},
+
+  { id:"INFERENCE", label:"WoFSCast\nReal-Time Inference", cat:"ml",
+    subtitle:"Latest WoFS analysis → probabilistic storm forecasts",
+    desc:"At inference time, the most recent WoFS analysis (WRFOUT or MPAS output from either WoFS system) is processed through the identical preprocessing pipeline used during training (same variable selection, normalization constants, graph mesh). The frozen GNN auto-regressively produces the next-5-minute state, rolling out to 3+ hours. Total latency: ~30 seconds on one GPU for a 3-hr ensemble, enabling extremely rapid ensemble generation for operational severe weather forecasting.",
+    inputs:["Latest WoFS-WRF WRFOUT or WoFS-MPAS NetCDF","Pre-trained GNN model weights"],
+    outputs:["Probabilistic 3-D atmospheric state forecasts","5-min steps to 3+ hr lead times","→ Post-processing for hazard probabilities"],
+    future:"Real-time WoFSCast will be evaluated at the NOAA Hazardous Weather Testbed (~2026) alongside WoFS NWP. Future diffusion-model versions will generate larger ensembles even faster.",
+    links:[
+      {title:"NOAA Hazardous Weather Testbed", url:"https://www.nssl.noaa.gov/projects/hwt/", icon:"⛈️"},
+      {title:"WoFSCast GitHub", url:"https://github.com/NOAA-National-Severe-Storms-Laboratory/frdd-wofs-cast", icon:"💻"},
+    ]},
+
+  { id:"PRODUCTS", label:"WoFSCast\nForecast Products", cat:"ml",
+    subtitle:"Probabilistic tornado, hail, wind guidance → NWS",
+    desc:"WoFSCast output is post-processed into operational severe weather hazard probability products: tornado probability (exceedance thresholds on UH and rotation tracks), hail swath probabilities, damaging wind probability, storm motion vectors. These are displayed in NOAA's forecast decision-support tools and provide guidance to NWS forecasters and Emergency Management at 5-min to 3+ hr lead times — much faster than traditional NWP ensemble generation.",
+    inputs:["WoFSCast forecast fields (all ensemble members)"],
+    outputs:["Tornado / hail / wind probability grids","→ NWS, Emergency Management, public decision support"],
+    future:"Products will expand as WoFSCast lead times and resolution improve. Integration with WarnGen and NOAA's Watch-Warning-Advisory system is the long-term operational target.",
+    links:[
+      {title:"NOAA WoFS Viewer", url:"https://wof.nssl.noaa.gov/", icon:"🗺️"},
+      {title:"NSSL WoFS Overview", url:"https://www.nssl.noaa.gov/projects/wof/overview.php", icon:"🌩️"},
+    ]},
+
+  // ── Future Nodes ───────────────────────────────────────────
+  { id:"RRFSv1", label:"RRFSv1 / REFS ⚡\n(Oct 6, 2026)", cat:"future",
+    subtitle:"FV3 · 3 km · replaces HRRR, RAP, NAM, HRRRe — Oct 2026",
+    desc:"RRFSv1 and its ensemble companion REFS become fully operational on October 6, 2026, simultaneously retiring HRRR, RAP, NAM, HREF, SREF, and all HiResW domains. RRFSv1 uses the FV3 (Finite-Volume Cubed-Sphere) dynamical core — a finite-volume solver on a cubed-sphere mesh with a Lagrangian vertical coordinate — the same core as GFS, GEFS, and HAFS. This unifies vertical coordinates, physics suites, and infrastructure across global (GFS, ~13 km) and regional (RRFS, 3 km) NOAA NWP for the first time. FV3 is not a WRF-ARW successor in the strict sense; it uses different numerics, grid geometry (cubed-sphere vs. Cartesian), and a different physics coupling framework (CCPP — Common Community Physics Package). Physics porting from WRF-ARW to FV3/CCPP has been a major engineering challenge. RRFSv1 runs at 3-km over all of North America (CONUS, Alaska, Hawaii, Puerto Rico), updating hourly to 18 hours and 4×/day to 84 hours deterministic; REFS ensemble runs to 60 hours. REFS replaces HRRRe as the ensemble BC source for WoFS — the most consequential near-term change for the WoFSCast chain. A parallel real-time feed is available on NOMADS from August 11, 2026 for workflow migration testing.",
+    inputs:["GFS/GDAS analysis (ICs & LBCs)","MRMS radar reflectivity & radial velocity","GOES satellite radiances","PrepBUFR conventional obs (surface, upper-air, aircraft)","Ensemble-based DA (EnKF / JEDI-hybrid)"],
+    outputs:["3-km deterministic forecast: hourly to 18 hr, 4×/day to 84 hr","REFS ensemble (60 hr) → WoFS-WRF/MPAS ICs & LBCs (replaces HRRRe)","Replaces: HRRR, RAP, NAM, HREF, SREF, HiResW"],
+    future:"RRFSv1 is the bridge to RRFSv2. After operational experience accumulates, NOAA will develop RRFSv2 (~2027–2028) using MPAS as the dynamical core instead of FV3.",
+    links:[
+      {title:"NWS Service Change Notice 26-48", url:"https://www.weather.gov/media/notification/pdf_2026/scn26-48_RRFS_and_REFS_Implementation.pdf", icon:"📄"},
+      {title:"RRFS Prototype on AWS", url:"https://registry.opendata.aws/noaa-rrfs/", icon:"☁️"},
+      {title:"NOAA GSL RRFS Development", url:"https://gsl.noaa.gov/rrfs/", icon:"🔬"},
+      {title:"DTC RRFS Community", url:"https://dtcenter.org/community-code/rrfs", icon:"🌐"},
+      {title:"RRFS Implementation Announcement", url:"https://gribstream.com/blog/noaa-rrfs-refs-operational-august-2026", icon:"📢"},
+    ]},
+
+  { id:"RRFSv2", label:"RRFSv2 ⚡\n(~2027–2028)", cat:"future",
+    subtitle:"MPAS dynamical core · next-gen RRFS after v1 ops experience",
+    desc:"RRFS version 2 is the planned successor to RRFSv1, targeted for development and deployment in the 2027–2028 timeframe. The key upgrade: RRFSv2 will replace the FV3 dynamical core with MPAS (Model for Prediction Across Scales), bringing the unstructured Voronoi mesh and variable-resolution capabilities that NOAA has been developing through WoFS-MPAS and the broader UFS program. MPAS allows seamless global-to-storm-scale resolution in a single mesh, eliminating the sharp lateral boundary interface of nested-grid approaches. RRFSv2 will build directly on operational lessons from RRFSv1 and the research experience accumulated through WoFS-MPAS. Its DA system is expected to use JEDI as the primary framework, completing the transition away from GSI across all NOAA regional NWP. GeoXO hyperspectral sounding data (~2030s) will be a primary new observation type for RRFSv2-era systems.",
+    inputs:["GFS/GDAS or future AI global model analyses (ICs & LBCs)","MRMS radar (inc. future PAR data)","GOES-19/GeoXO satellite radiances (via JEDI/CRTM)","Full conventional obs suite (IODA format)","GNSS-RO profiles","JEDI-based ensemble DA (4DEnVar / EDA)"],
+    outputs:["3-km MPAS forecast over North America (variable-resolution mesh)","REFS-equivalent MPAS ensemble → next-gen WoFS ICs/BCs","Improved storm-scale analysis via MPAS Voronoi mesh"],
+    future:"Under research and development. Operational target ~2027–2028 based on RRFSv1 feedback. MPAS-JEDI is the planned DA framework, directly inheriting from WoFS-MPAS JEDI research.",
+    links:[
+      {title:"NOAA GSL RRFS Roadmap", url:"https://gsl.noaa.gov/rrfs/", icon:"🔬"},
+      {title:"MPAS Project (NCAR/LANL)", url:"https://mpas-dev.github.io/", icon:"🌐"},
+      {title:"JCSDA JEDI (future DA framework)", url:"https://www.jcsda.org/jedi", icon:"🔬"},
+      {title:"DTC RRFS Community", url:"https://dtcenter.org/community-code/rrfs", icon:"🌐"},
+    ]},
+
+  { id:"EAGLE", label:"NOAA EAGLE ⚡\nAIGFS / AIGEFS", cat:"future",
+    subtitle:"Operational AI global forecast system — Dec 2025",
+    desc:"Project EAGLE (Experimental AI Global and Limited-area Ensemble forecast system) became operational December 2025 with AIGFS (AI Global Forecast System) and AIGEFS (AI Global Ensemble Forecast System). Both use a GraphCast-style GNN trained on 45 years of ERA5 plus 4 years of NOAA GDAS analyses, initialized from operational GFS. HRRR-Cast is the regional AI analog (C-USA severe weather). EAGLE models may eventually supplement or replace GFS/GEFS as the global BC source for WoFS.",
+    inputs:["ERA5 (45-yr, training)","GDAS analyses (4-yr, training)","Operational GFS analysis (initialization)"],
+    outputs:["Global AI deterministic forecasts (AIGFS)","Global AI ensemble forecasts (AIGEFS)","Regional AI forecasts (HRRR-Cast)"],
+    future:"NOAA EAGLE marks the operational deployment of AI global NWP at NOAA. Integration into the WoFS BC chain depends on verification skill relative to GFS/GEFS.",
+    links:[
+      {title:"NOAA EPIC Project EAGLE", url:"https://epic.noaa.gov/noaa-project-eagle-to-accelerate-ai-weather-prediction-advances-for-the-united-states/", icon:"🦅"},
+      {title:"AIGFS on AWS Open Data", url:"https://registry.opendata.aws/noaa-nws-graphcastgfs-pds/", icon:"☁️"},
+    ]},
+
+  { id:"GEOXO", label:"GeoXO\n(~2030s) ⚡", cat:"future",
+    subtitle:"Next-gen geostationary constellation — hyperspectral sounder",
+    desc:"GeoXO is NOAA's next geostationary satellite constellation, planned to begin launching in the early 2030s. Three satellites (East, Central, West) will carry: a hyperspectral infrared sounder (100s–1000s of channels, near-radiosonde vertical resolution from GEO orbit), a next-generation lightning mapper, an enhanced ABI-successor imager, and air quality / ocean sensors. GeoXO's hyperspectral sounder will be transformative for WoFS DA — providing high-vertical-resolution thermodynamic profiles across the full WoFS domain every ~30 minutes.",
+    inputs:["Upwelling radiation from atmosphere/surface (new instrument suite)"],
+    outputs:["Hyperspectral soundings, next-gen lightning, enhanced imagery → future DA systems"],
+    future:"First GeoXO launch targeted early 2030s. NOAA/NASA program under development with Lockheed Martin (2024 contract award).",
+    links:[
+      {title:"NOAA GeoXO Program", url:"https://www.nesdis.noaa.gov/next-generation/geoxo", icon:"🛰️"},
+      {title:"GeoXO Congressional Report", url:"https://www.congress.gov/crs_external_products/IF/PDF/IF12898/IF12898.1.pdf", icon:"📄"},
+      {title:"Lockheed Martin GeoXO Contract", url:"https://news.lockheedmartin.com/2024-06-18-Lockheed-Martin-Selected-to-Develop-Next-Generation-Weather-Satellite-Constellation", icon:"🏭"},
+    ]},
+
+  { id:"PAR", label:"Phased Array Radar ⚡\n(PAR — future NEXRAD)", cat:"future",
+    subtitle:"~30-sec volume scans — next-gen NEXRAD",
+    desc:"Phased Array Radar (PAR) is the planned long-term successor to the WSR-88D NEXRAD network, under development at NSSL and partners. An electronically steered phased-array antenna enables volume scans in ~30 seconds vs. 4–6 minutes for mechanical rotation. For WoFS DA (cycling every 15 minutes), faster scans would allow more frequent radar sub-cycles and reduce the lag between observed and modeled storm evolution — a critical improvement for rapidly intensifying tornadoes.",
+    inputs:["Atmospheric radar returns (same physics as WSR-88D, faster scanning)"],
+    outputs:["High-frequency 3-D reflectivity & velocity → future MRMS, future WoFS DA"],
+    future:"PAR is in research and development; no firm operational deployment date yet. Multiple NSSL prototype systems have been tested. Full network deployment is a multi-decade program.",
+    links:[
+      {title:"NSSL PAR Research", url:"https://www.nssl.noaa.gov/projects/par/", icon:"📡"},
+      {title:"PAR Overview (NOAA)", url:"https://www.nssl.noaa.gov/projects/par/overview.php", icon:"📄"},
+    ]},
+
+  { id:"WOFSCAST_V2", label:"WoFSCast v2 ⚡\nFuture Development", cat:"future",
+    subtitle:"Diffusion ensemble, 1-km, HWT evaluation ~2026",
+    desc:"The WoFSCast roadmap includes: (1) Diffusion-based generative ensemble (GenCast-style) for better probabilistic uncertainty representation and sharper storm structures; (2) 1-km target resolution to begin resolving individual updrafts, hook echoes, and mesocyclones; (3) NOAA Hazardous Weather Testbed (HWT) real-time evaluation alongside WoFS NWP (~2026); (4) longer lead times (6+ hr); (5) eventual end-to-end AI pipeline from DA through forecast and hazard products. Speed advantage: ~30-second 3-hr ensemble on 1 GPU vs ~10 min on 1,100 CPUs.",
+    inputs:["WoFS-RRFS NWP output (future training)","Pre-trained model weights (inference)"],
+    outputs:["Diffusion-sampled probabilistic ensemble","Tornado/hail/wind probability → HWT operations"],
+    future:"Under active development at NOAA NSSL/CIWRO. HWT evaluation expected ~2026. 1-km and 6+ hr versions in research phase.",
+    links:[
+      {title:"NOAA Hazardous Weather Testbed", url:"https://www.nssl.noaa.gov/projects/hwt/", icon:"⛈️"},
+      {title:"WoFSCast GitHub", url:"https://github.com/NOAA-National-Severe-Storms-Laboratory/frdd-wofs-cast", icon:"💻"},
+      {title:"GenCast (DeepMind)", url:"https://www.nature.com/articles/s41586-024-08252-9", icon:"📄"},
+    ]},
+
+  // ── WoFSCast-MPAS parallel pipeline (future/planned) ──────
+  { id:"TRAIN_PIPE_MPAS", label:"WoFSCast-MPAS ⚡\nTraining Pipeline", cat:"future",
+    subtitle:"Future: train WoFSCast on WoFS-MPAS archives",
+    desc:"A planned parallel WoFSCast training pipeline fed by WoFS-MPAS ensemble output rather than WoFS-WRF. WoFS-MPAS uses the unstructured Voronoi mesh (MPAS-A), which requires different regridding to the icosahedral GNN mesh compared to the WRF Cartesian grid used in the current WoFSCast pipeline. Development depends on sufficient WoFS-MPAS archive accumulation and mesh-to-graph interpolation tooling.",
+    inputs:["WoFS-MPAS historical ensemble archives","ERA5 context fields"],
+    outputs:["MPAS-derived normalized tensor pairs","Icosahedral mesh definition for MPAS-based GNN"],
+    future:"Not yet in development. Depends on WoFS-MPAS becoming operational and accumulating multi-season archives. MPAS Voronoi → icosahedral mesh regridding is a key technical challenge.",
+    links:[
+      {title:"WoFSCast GitHub (NOAA-NSSL)", url:"https://github.com/NOAA-National-Severe-Storms-Laboratory/frdd-wofs-cast", icon:"💻"},
+      {title:"WoFS-MPAS Overview", url:"https://wof.nssl.noaa.gov/", icon:"🌪️"},
+    ]},
+
+  { id:"GNN_MPAS", label:"WoFSCast-MPAS ⚡\nGNN Model", cat:"future",
+    subtitle:"Future: GNN trained on WoFS-MPAS output",
+    desc:"A future GraphCast-style GNN trained exclusively on WoFS-MPAS ensemble output. The MPAS mesh geometry and physics (including scale-aware convection and MPAS microphysics) differ from WRF-ARW, so a separate model is expected rather than transferring WoFS-WRF weights directly. This model would serve as the inference backbone for a WoFSCast-MPAS real-time system.",
+    inputs:["Normalized WoFS-MPAS training tensors","MPAS-to-icosahedral mesh graph"],
+    outputs:["Trained GNN weights for MPAS-domain inference"],
+    future:"Future development, no timeline. Requires sufficient MPAS archive and MPAS-mesh GNN graph tooling. May share architecture with WoFSCast v2 diffusion model.",
+    links:[
+      {title:"WoFSCast GitHub (NOAA-NSSL)", url:"https://github.com/NOAA-National-Severe-Storms-Laboratory/frdd-wofs-cast", icon:"💻"},
+    ]},
+
+  { id:"INFERENCE_MPAS", label:"WoFSCast-MPAS ⚡\nReal-Time Inference", cat:"future",
+    subtitle:"Future: real-time storm forecasts from WoFS-MPAS IC",
+    desc:"A planned real-time WoFSCast inference system initialized from WoFS-MPAS ensemble analyses rather than WoFS-WRF. At each 15-min DA cycle, the latest WoFS-MPAS analysis would be preprocessed and fed to a MPAS-trained GNN to produce probabilistic 3+ hr storm-scale forecasts. This would run in parallel with the WRF-based WoFSCast system during an evaluation period.",
+    inputs:["Latest WoFS-MPAS ensemble analysis","WoFSCast-MPAS GNN model weights"],
+    outputs:["Probabilistic 3-D MPAS-based storm forecasts","5-min steps to 3+ hr lead times"],
+    future:"Planned for evaluation once WoFS-MPAS becomes operational and a trained MPAS GNN is available. Parallel evaluation against WRF-based WoFSCast expected at NOAA HWT.",
+    links:[
+      {title:"NOAA Hazardous Weather Testbed", url:"https://www.nssl.noaa.gov/projects/hwt/", icon:"⛈️"},
+      {title:"WoFS-MPAS Overview", url:"https://wof.nssl.noaa.gov/", icon:"🌪️"},
+    ]},
+
+  { id:"PRODUCTS_MPAS", label:"WoFSCast-MPAS ⚡\nForecast Products", cat:"future",
+    subtitle:"Future: MPAS-based probabilistic severe weather guidance",
+    desc:"Future probabilistic severe weather hazard products derived from WoFSCast-MPAS inference: tornado, hail, and damaging wind probabilities generated from a GNN trained on MPAS ensemble output. These would be evaluated against WRF-based WoFSCast products at NOAA HWT to assess whether the MPAS dynamical core provides skill improvements for storm-scale AI forecasting.",
+    inputs:["WoFSCast-MPAS forecast fields"],
+    outputs:["Tornado / hail / wind probability grids (MPAS-based)","→ Parallel evaluation at NOAA HWT"],
+    future:"Future development contingent on WoFSCast-MPAS GNN training and HWT infrastructure support.",
+    links:[
+      {title:"NOAA WoFS Viewer", url:"https://wof.nssl.noaa.gov/", icon:"🗺️"},
+    ]},
+
+];
+
+// ══════════════════════════════════════════════════════════════
+// EDGE DATA
+// ══════════════════════════════════════════════════════════════
+const EDGES_DATA = [
+  // ── sensors → raw processing ──────────────────────────────
+  {from:"WSR88D", to:"RPG", label:"Level-II", type:"radar",
+   desc:"WSR-88D base (Level-II) data — full-resolution polar-format reflectivity, radial velocity, spectrum width, and dual-pol variables — are forwarded in real-time from each site's Radar Data Acquisition (RDA) unit to the co-located Radar Product Generator (RPG). The RPG generates ~100+ NIDS Level-III products for local and national distribution.",
+   tags:["Level-II polar data","Z, Vr, ZDR, ρHV, ΦDP","S-band dual-pol","4–6 min volume scans"],
+   links:[{title:"NEXRAD Level-II Product Description",url:"https://www.ncei.noaa.gov/products/radar/next-generation-weather-radar",icon:"📄"},{title:"NOAA ROC — RPG Description",url:"https://www.roc.noaa.gov/rpg/",icon:"📡"}]},
+  {from:"WSR88D", to:"MRMS", label:"Level-II", type:"radar",
+   desc:"MRMS ingests WSR-88D Level-II data directly from ~160 NEXRAD sites (plus ~30 Canadian radars) to build seamless national 3-D radar mosaics. The Level-II polar volumes are quality-controlled, interpolated to a 3-D Cartesian grid (1 km, 33 levels), and merged every 2 minutes.",
+   tags:["Level-II polar volumes","Multi-sensor QC","1-km Cartesian grid","2-min update"],
+   links:[{title:"MRMS Overview (NSSL)",url:"https://www.nssl.noaa.gov/projects/mrms/",icon:"📡"},{title:"MRMS on AWS Open Data",url:"https://registry.opendata.aws/noaa-mrms-pds/",icon:"☁️"}]},
+  {from:"RPG", to:"MRMS", label:"Level-III", type:"radar",
+   desc:"RPG-generated Level-III products (composite reflectivity, echo tops, storm-relative motion, VIL, mesocyclone detections, tornado signatures) feed into MRMS as supplemental inputs for product generation and quality control, particularly for severe weather hazard algorithms.",
+   tags:["Level-III NIDS products","Composite reflectivity","Echo tops","Meso/TVS detections"],
+   links:[{title:"NEXRAD Level-III Products",url:"https://www.ncei.noaa.gov/access/metadata/landing-page/bin/iso?id=gov.noaa.ncdc:C00708",icon:"📄"}]},
+  {from:"GOES", to:"L1B", type:"satellite",
+   desc:"Raw GOES-16/18/19 ABI radiance telemetry (Level-0) is received at the NOAA/NESDIS Enterprise Ground System (EGS) and calibrated/geolocated into Level-1b (L1b) radiances across 16 spectral bands (0.5–13.3 µm). L1b data are the primary product distributed via the GOES rebroadcast (GRB) and cloud archives.",
+   tags:["16-band ABI radiances","Calibrated / geolocated","L1b CONUS 5-min","L1b MESO 30–60 s"],
+   links:[{title:"GOES-R L1b Product Definition",url:"https://www.goes-r.gov/products/docs/PUG-L1b-vol3.pdf",icon:"📄"},{title:"AWS GOES-16/18 L1b",url:"https://registry.opendata.aws/noaa-goes/",icon:"☁️"}]},
+  {from:"L1B", to:"L2GOES", type:"satellite",
+   desc:"GOES L1b radiances are processed by the NESDIS Enterprise Algorithm Team into Level-2 (L2) geophysical retrievals: Cloud & Moisture Imagery (CMI), Cloud Top Height (CTH), Cloud Water Path (CWP), Derived Stability Indices (DSI), and Legacy Atmospheric Motion Vectors (AMV). These derived products reduce dimensionality for DA systems that cannot directly assimilate L1b.",
+   tags:["Cloud Top Height","Cloud Water Path","AMVs","Derived stability indices","CMI"],
+   links:[{title:"GOES-R L2 Products Guide",url:"https://www.goes-r.gov/products/docs/PUG-L2+-vol5.pdf",icon:"📄"},{title:"NESDIS GOES L2 Products",url:"https://www.nesdis.noaa.gov/real-time-imagery/satellite-imagery/goes",icon:"🛰️"}]},
+  {from:"GOES", to:"MRMS", label:"GLM lightning", type:"satellite",
+   desc:"The Geostationary Lightning Mapper (GLM) on GOES-16/18/19 detects total lightning (cloud-to-ground + intra-cloud) at 8-km/2-ms resolution across the Americas. GLM flash density and flash rate data are ingested by MRMS to enhance convective initiation detection and severe weather signatures.",
+   tags:["Total lightning","8-km / 2-ms resolution","Flash density","Flash rate","GLM L2"],
+   links:[{title:"GOES GLM Product Description",url:"https://www.goes-r.gov/products/docs/PUG-L2+-vol5.pdf",icon:"📄"},{title:"NSSL GLM in MRMS",url:"https://www.nssl.noaa.gov/projects/mrms/",icon:"📡"}]},
+  {from:"RAOB", to:"BUFR", type:"obs",
+   desc:"Twice-daily radiosonde launches (00 and 12 UTC, ~900 global WMO sites) provide vertical profiles of temperature, dew point, wind speed/direction, and pressure from the surface to ~30 km. These profiles are encoded in Binary Universal Form for Representation (BUFR) by NWS/NCEP and distributed via the GTS/LDM for global NWP assimilation.",
+   tags:["Temperature / moisture profiles","Wind profiles","Surface to ~30 km","00Z & 12Z","WMO TEMP/TTAA BUFR"],
+   links:[{title:"NWS Upper Air Program",url:"https://www.weather.gov/upperair/",icon:"🎈"},{title:"NCEI Radiosonde Archive",url:"https://www.ncei.noaa.gov/products/weather-balloon/",icon:"🗄️"}]},
+  {from:"METAR", to:"BUFR", type:"obs",
+   desc:"METAR (Meteorological Aerodrome Reports) from ~1,500 US airports and ~10,000 global ICAO stations provide hourly (or more frequent SPECI) surface observations: wind, visibility, present weather, ceiling, temperature, dew point, altimeter setting. NCEP encodes METARs into PrepBUFR for assimilation into all US NWP models.",
+   tags:["Hourly surface obs","Wind / T / Td / P","PrepBUFR","ICAO METAR format","~1,500 US stations"],
+   links:[{title:"NWS METAR Decode",url:"https://www.aviationweather.gov/metar/",icon:"🛩️"},{title:"NCEP PrepBUFR Documentation",url:"https://nomads.ncep.noaa.gov/",icon:"📄"}]},
+  {from:"MESONET", to:"BUFR", type:"obs",
+   desc:"State and tribal mesonet networks (Oklahoma Mesonet ~120 sites, Texas ASOS/AWOS, CoCoRaHS, etc.) provide dense surface observations of temperature, humidity, wind, pressure, and soil moisture at sub-hourly intervals. NCEP Quality-controls and encodes these into PrepBUFR via the Mesonet MADIS program.",
+   tags:["Sub-hourly surface obs","Dense networks (<10 km)","T / RH / wind / P","PrepBUFR / MADIS"],
+   links:[{title:"Oklahoma Mesonet",url:"https://www.mesonet.org/",icon:"🌡️"},{title:"MADIS (Meteorological Assimilation Data Ingest System)",url:"https://madis.ncep.noaa.gov/",icon:"🌐"}]},
+  {from:"ACARS", to:"BUFR", type:"obs",
+   desc:"Aircraft Communications Addressing and Reporting System (ACARS) provides in-flight measurements of temperature, wind, and turbulence from commercial aircraft during ascent, cruise, and descent. AMDAR (Aircraft Meteorological Data Relay) is the WMO standard protocol. US data are collected by NOAA/NWS and encoded into PrepBUFR.",
+   tags:["Aircraft temperature / wind","AMDAR/ACARS protocol","Ascent/descent profiles","Cruise wind reports","PrepBUFR"],
+   links:[{title:"NWS AMDAR Program",url:"https://www.weather.gov/media/amdar/",icon:"✈️"},{title:"WMO AMDAR Observing System",url:"https://community.wmo.int/en/activity-areas/amdar",icon:"🌐"}]},
+  {from:"POES", to:"BUFR", type:"satellite",
+   desc:"Polar-orbiting satellite retrievals from JPSS/Suomi-NPP (ATMS, CrIS, VIIRS), MetOp (AMSU-A, MHS, IASI), and NOAA-20/21 are processed into temperature and moisture soundings and encoded into BUFR for global NWP assimilation. Radiance data also flow directly into GFS/GDAS via the BUFR feed.",
+   tags:["ATMS microwave soundings","CrIS IR soundings","IASI IR soundings","AMSU-A/MHS","BUFR radiances"],
+   links:[{title:"NOAA JPSS Program",url:"https://www.nesdis.noaa.gov/current-satellite-missions/currently-flying/joint-polar-satellite-system",icon:"🛰️"},{title:"EUMETSAT MetOp Data",url:"https://www.eumetsat.int/metop",icon:"🛰️"}]},
+  {from:"GNSSRO", to:"BUFR", type:"obs",
+   desc:"GPS/GNSS Radio Occultation (RO) provides refractivity profiles related to temperature and moisture from ~4,000 daily occultation events (COSMIC-2, SPIRE, Metop GRAS, PlanetiQ). UCAR COSMIC Program processes raw bending angle data into excess phase and refractivity profiles, encoded as BUFR for global assimilation.",
+   tags:["Refractivity profiles","Bending angle profiles","COSMIC-2 / SPIRE","~4,000 profiles/day","GPS-RO BUFR"],
+   links:[{title:"UCAR COSMIC-2 Program",url:"https://cosmic.ucar.edu/",icon:"🌐"},{title:"NOAA GNSS-RO Data",url:"https://www.nesdis.noaa.gov/real-time-imagery/gnss-ro",icon:"🛰️"}]},
+  {from:"METAR", to:"MRMS", type:"obs",
+   desc:"MRMS ingests METAR surface observations (precipitation type, rate, accumulation, present weather) from ASOS/AWOS stations to support gauge-radar QPE merging, precipitation type classification, and the Multi-sensor Precipitation Estimator (MPE).",
+   tags:["Precip type / rate","Gauge-radar QPE","ASOS/AWOS","Surface precip obs"],
+   links:[{title:"MRMS QPE Description",url:"https://www.nssl.noaa.gov/projects/mrms/",icon:"📡"}]},
+
+  // ── obs → GDAS/GFS ───────────────────────────────────────
+  {from:"BUFR", to:"GDAS", type:"obs",
+   desc:"The Global Data Assimilation System (GDAS) ingests PrepBUFR-formatted conventional observations (radiosondes, surface stations, aircraft, ship reports, drifting buoys) for assimilation using the Gridpoint Statistical Interpolation (GSI) hybrid EnKF-4DEnVar system. Data cutoffs are staggered: early cutoff at T+3.5 hr, late cutoff at T+5.5 hr.",
+   tags:["PrepBUFR conventional obs","GSI hybrid EnKF-4DEnVar","T+3.5 hr cutoff","RAOB / METAR / ACARS"],
+   links:[{title:"NCEP GDAS Description",url:"https://www.ncep.noaa.gov/data_assimilation/",icon:"📄"},{title:"GSI User Guide",url:"https://dtcenter.org/community-code/gridpoint-statistical-interpolation-gsi",icon:"📚"}]},
+  {from:"L1B", to:"GDAS", label:"radiances", type:"satellite",
+   desc:"GOES and POES L1b radiances are directly assimilated into GDAS as brightness temperatures via the Community Radiative Transfer Model (CRTM) observation operator. This all-sky (including cloudy/precipitating) radiance assimilation is the largest observation type by count in global NWP.",
+   tags:["All-sky L1b radiances","CRTM radiative transfer","GOES + POES BTs","Direct assimilation","Largest obs count in NWP"],
+   links:[{title:"JCSDA CRTM",url:"https://www.jcsda.org/crtm",icon:"🔬"},{title:"GDAS Satellite Radiance DA",url:"https://www.ncep.noaa.gov/data_assimilation/",icon:"📄"}]},
+  {from:"L2GOES", to:"GDAS", type:"satellite",
+   desc:"GOES-derived Level-2 products — Atmospheric Motion Vectors (AMVs), cloud-top pressure/temperature, and precipitable water — are assimilated into GDAS as supplemental satellite observations, especially where direct L1b radiance assimilation is not performed.",
+   tags:["GOES AMVs","Cloud-top pressure","Precipitable water","L2 retrievals"],
+   links:[{title:"AMV Assimilation in GFS/GDAS",url:"https://www.nesdis.noaa.gov/real-time-imagery/satellite-imagery/goes",icon:"🛰️"}]},
+  {from:"GNSSRO", to:"GDAS", type:"obs",
+   desc:"GNSS-RO refractivity (and bending angle) profiles are assimilated directly in GDAS without bias correction, providing accurate thermodynamic information from the mid-troposphere to the stratosphere globally. RO is particularly valuable over data-sparse oceanic regions.",
+   tags:["Refractivity profiles","No bias correction needed","Global coverage","Mid-tropo to stratosphere","GPS-RO"],
+   links:[{title:"GNSS-RO in GFS/GDAS",url:"https://www.ncep.noaa.gov/data_assimilation/",icon:"📄"},{title:"UCAR COSMIC Impact Studies",url:"https://cosmic.ucar.edu/",icon:"🌐"}]},
+  {from:"GDAS", to:"GFS", type:"model_bc",
+   desc:"The GDAS analysis provides the initial conditions (ICs) — 3-D atmospheric state on the global FV3 cubed-sphere grid — for every GFS forecast cycle. GFS is initialized 4 times daily (00, 06, 12, 18 UTC) from the GDAS 6-hourly analysis.",
+   tags:["GFS initial conditions","6-hourly analysis","FV3 cubed-sphere grid","4×/day initialization"],
+   links:[{title:"NCEP GFS Description",url:"https://www.ncep.noaa.gov/products/forecasts/",icon:"📄"},{title:"GFS on NOMADS",url:"https://nomads.ncep.noaa.gov/",icon:"☁️"}]},
+  {from:"GFS", to:"GEFS", type:"model_bc",
+   desc:"GEFS (Global Ensemble Forecast System) is initialized from a perturbed version of the GFS analysis, using Ensemble Kalman Filter (EnKF) perturbations to represent initial condition uncertainty. GFS provides the control member and the ensemble mean background for GEFS initialization.",
+   tags:["GEFS control member","EnKF perturbations","30-member ensemble","GFS-based ICs"],
+   links:[{title:"NCEP GEFS Description",url:"https://www.emc.ncep.noaa.gov/emc/pages/numerical_forecast_systems/gefs.php",icon:"📄"},{title:"GEFS on AWS",url:"https://registry.opendata.aws/noaa-gefs-pds/",icon:"☁️"}]},
+
+  // ── GFS/GEFS → regional models ───────────────────────────
+  {from:"GFS", to:"RAP", label:"LBCs", type:"model_bc",
+   desc:"GFS 6-hourly forecasts provide lateral boundary conditions (LBCs) for the RAP domain throughout the RAP forecast cycle. GFS fields are interpolated from the global FV3 grid to the RAP 13-km HRRR-nest domain boundary at each boundary update interval (~1 hr).",
+   tags:["Lateral boundary conditions","6-hourly GFS fields","13-km RAP domain","Horizontal interpolation"],
+   links:[{title:"RAP Model Description",url:"https://rapidrefresh.noaa.gov/",icon:"📄"},{title:"NOAA GSL RAP/HRRR",url:"https://gsl.noaa.gov/",icon:"🔬"}]},
+  {from:"RAP", to:"HRRR", label:"ICs/BCs", type:"model_bc",
+   desc:"The RAP 13-km analysis provides both initial conditions and lateral boundary conditions for the HRRR 3-km domain. HRRR is nested inside RAP, with RAP fields down-scaled and used as the hourly LBC input throughout the HRRR forecast.",
+   tags:["HRRR ICs from RAP","LBCs from RAP 13-km","Nesting: RAP→HRRR","Hourly cycling"],
+   links:[{title:"HRRR Model Description",url:"https://rapidrefresh.noaa.gov/hrrr/",icon:"📄"},{title:"HRRR on AWS",url:"https://registry.opendata.aws/noaa-hrrr-pds/",icon:"☁️"}]},
+  {from:"BUFR", to:"RAP", label:"obs", type:"obs",
+   desc:"PrepBUFR conventional observations (METARs, rawinsondes, ACARS aircraft, ship/buoy reports, mesonet) are assimilated into the RAP hourly analysis cycle using the Gridpoint Statistical Interpolation (GSI) 3DVar system. RAP assimilates a 1-hour window of observations at each cycle.",
+   tags:["PrepBUFR conventional obs","GSI 3DVar","1-hr assimilation window","Hourly cycling"],
+   links:[{title:"RAP Assimilation Description",url:"https://rapidrefresh.noaa.gov/",icon:"📄"}]},
+  {from:"MRMS", to:"RAP", label:"radar", type:"radar",
+   desc:"MRMS 3-D radar reflectivity mosaics are ingested into the RAP hourly DA cycle for radar reflectivity assimilation. RAP uses a diabatic digital filter initialization (DDFI) approach to spin up precipitation from the MRMS radar composite, critical for short-range precipitation forecasts.",
+   tags:["MRMS 3-D reflectivity","Diabatic filter init (DDFI)","Latent heat nudging","Hourly radar DA"],
+   links:[{title:"RAP Radar Assimilation",url:"https://rapidrefresh.noaa.gov/",icon:"📄"}]},
+  {from:"L1B", to:"RAP", label:"radiances", type:"satellite",
+   desc:"GOES L1b radiances (channels 8–10, water vapor; channel 14, clean IR window) are assimilated into the RAP GSI system as brightness temperatures via CRTM, providing moisture and cloud information over the CONUS domain at each hourly cycle.",
+   tags:["GOES L1b radiances","GSI CRTM","Water vapor channels","IR window channel","Hourly GOES DA"],
+   links:[{title:"RAP GOES Radiance DA",url:"https://rapidrefresh.noaa.gov/",icon:"📄"}]},
+  {from:"BUFR", to:"HRRR", label:"obs", type:"obs",
+   desc:"PrepBUFR conventional observations assimilated into the HRRR hourly cycle via GSI 3DVar, similar to RAP but focused on the 3-km HRRR domain and with HRRR-specific quality control thresholds.",
+   tags:["PrepBUFR","GSI 3DVar","3-km domain","Hourly cycling","Surface + upper-air obs"],
+   links:[{title:"HRRR Assimilation",url:"https://rapidrefresh.noaa.gov/hrrr/",icon:"📄"}]},
+  {from:"MRMS", to:"HRRR", label:"radar DA", type:"radar",
+   desc:"MRMS 3-D reflectivity mosaics are assimilated into HRRR hourly using the HRRR-specific radar reflectivity DA scheme, which includes hydrometeor retrieval (from observed Z to model state variables qr, qs, qg) and latent heat nudging for convective initialization.",
+   tags:["MRMS 3-D reflectivity","Hydrometeor retrieval","Latent heat nudging","3-km radar DA","Hourly cycle"],
+   links:[{title:"HRRR Radar DA (Alexander et al.)",url:"https://rapidrefresh.noaa.gov/hrrr/",icon:"📄"}]},
+  {from:"L2GOES", to:"HRRR", label:"sat", type:"satellite",
+   desc:"GOES Level-2 cloud products (cloud-top height, cloud water path, cloud mask) are used in the HRRR cloud analysis to initialize cloud fields and suppress spurious convection where satellite indicates clear sky, improving the cloud initialization at the start of each HRRR forecast.",
+   tags:["GOES L2 cloud products","Cloud analysis initialization","Cloud mask","CTH / CWP","Clear-sky suppression"],
+   links:[{title:"HRRR Cloud Analysis",url:"https://rapidrefresh.noaa.gov/hrrr/",icon:"📄"}]},
+  {from:"HRRR", to:"HRRRE", label:"ens. pert.", type:"model_bc",
+   desc:"The HRRR Ensemble (HRRRe) is generated by perturbing HRRR analyses and using HRRR deterministic forecasts as the ensemble control. Ensemble perturbations are derived from time-lagged HRRR members and random covariance perturbations, producing an 8–9 member 3-km ensemble used as WoFS lateral boundary conditions.",
+   tags:["HRRR-based perturbations","Time-lagged ensemble","8–9 members","3-km ensemble BCs for WoFS"],
+   links:[{title:"HRRR Ensemble (HRRRe) Description",url:"https://rapidrefresh.noaa.gov/hrrr/",icon:"📄"}]},
+
+  // ── static → WPS ─────────────────────────────────────────
+  {from:"TERRAIN", to:"WPS", type:"static",
+   desc:"The WRF Preprocessing System (WPS) ingests USGS/SRTM terrain elevation data (geogrid step) to define the WoFS-WRF model terrain, grid structure, and orographic fields. Terrain data are interpolated from a 30-arc-second global DEM to the WoFS 3-km WRF-ARW domain.",
+   tags:["USGS/SRTM terrain DEM","WPS geogrid","30-arc-second → 3-km","WRF-ARW orography"],
+   links:[{title:"WPS User Guide",url:"https://www2.mmm.ucar.edu/wrf/users/docs/user_guide_v4/",icon:"📄"},{title:"USGS GTOPO30 / SRTM",url:"https://www.usgs.gov/centers/eros/science/usgs-eros-archive-digital-elevation-shuttle-radar-topography-mission-srtm",icon:"🗄️"}]},
+  {from:"LANDUSE", to:"WPS", type:"static",
+   desc:"WPS ingests MODIS/USGS land-use/land-cover classification data (21 or 33 category IGBP) to define surface properties: albedo, roughness length, emissivity, stomatal resistance, and thermal inertia for the Noah/RUC land surface model used in WoFS-WRF.",
+   tags:["MODIS IGBP land use","21/33 category LULC","Noah LSM parameters","WPS geogrid","Surface properties"],
+   links:[{title:"WPS Land Use Documentation",url:"https://www2.mmm.ucar.edu/wrf/users/docs/user_guide_v4/",icon:"📄"},{title:"MODIS Land Cover (MCD12Q1)",url:"https://lpdaac.usgs.gov/products/mcd12q1v006/",icon:"🗄️"}]},
+  {from:"SST", to:"WPS", type:"static",
+   desc:"Sea surface temperature (SST) analyses (NCEP Real-Time Global SST, RTG-SST, or GHRSST) are interpolated to the WoFS domain via WPS to set lower boundary conditions over water surfaces. SST is updated daily or weekly.",
+   tags:["RTG-SST / GHRSST","Daily/weekly SST analysis","WPS metgrid","Lower boundary over water"],
+   links:[{title:"NCEP RTG-SST Description",url:"https://polar.ncep.noaa.gov/sst/",icon:"🌊"},{title:"GHRSST Multi-Scale SST",url:"https://www.ghrsst.org/",icon:"🌡️"}]},
+  {from:"HRRRE", to:"WPS", label:"met fields", type:"model_bc",
+   desc:"HRRRe 3-km meteorological fields (pressure, temperature, moisture, winds, hydrometeors) are interpolated to the WoFS-WRF domain grid via WPS metgrid, providing the initial and lateral boundary conditions for each WoFS-WRF DA cycle member.",
+   tags:["HRRRe 3-D met fields","WPS metgrid","ICs + BCs for WoFS-WRF","15-min WoFS DA cycle"],
+   links:[{title:"WoFS-WRF DA Description",url:"https://wof.nssl.noaa.gov/",icon:"🌪️"}]},
+
+  // ── static → MPAS prep ───────────────────────────────────
+  {from:"TERRAIN", to:"MPAS_PREP", type:"static",
+   desc:"MPAS preprocessing tools (init_atmosphere) ingest terrain elevation data to build the MPAS Voronoi mesh terrain fields. Unlike WRF's regular grid, MPAS terrain is interpolated onto the unstructured hexagonal Voronoi mesh cells at the target resolution (3 km for WoFS-MPAS).",
+   tags:["MPAS Voronoi mesh terrain","init_atmosphere","Unstructured mesh","3-km MPAS cells","Orographic fields"],
+   links:[{title:"MPAS User Guide",url:"https://mpas-dev.github.io/atmosphere/atmosphere.html",icon:"📄"},{title:"MPAS-A Tutorial (NCAR)",url:"https://www.mmm.ucar.edu/events/tutorials/",icon:"📚"}]},
+  {from:"LANDUSE", to:"MPAS_PREP", type:"static",
+   desc:"Land-use / land-cover classification data are interpolated to the MPAS unstructured mesh during init_atmosphere preprocessing, providing surface parameters for the Noah-MP land surface model used in MPAS-A.",
+   tags:["MODIS IGBP land use","MPAS init_atmosphere","Noah-MP LSM","Unstructured mesh LULC"],
+   links:[{title:"MPAS Land Surface Documentation",url:"https://mpas-dev.github.io/",icon:"📄"}]},
+  {from:"SST", to:"MPAS_PREP", type:"static",
+   desc:"Sea surface temperature analyses are interpolated to the MPAS mesh cells covering water surfaces during MPAS preprocessing, providing the SST lower boundary condition for the coupled atmosphere-surface system.",
+   tags:["SST lower boundary","MPAS ocean interface","Daily/weekly SST","init_atmosphere"],
+   links:[{title:"MPAS-A Technical Note",url:"https://mpas-dev.github.io/",icon:"📄"}]},
+  {from:"GFS", to:"MPAS_PREP", label:"init fields", type:"model_bc",
+   desc:"GFS 0.25° analysis fields (temperature, specific humidity, u/v winds, geopotential height, surface pressure) are horizontally interpolated from the global FV3 cubed-sphere grid to the MPAS Voronoi mesh to provide the initial atmospheric state for the WoFS-MPAS ensemble.",
+   tags:["GFS 0.25° analysis","MPAS horizontal interpolation","Initial atmospheric state","T / q / winds / P"],
+   links:[{title:"MPAS Initialization from GFS",url:"https://mpas-dev.github.io/",icon:"📄"},{title:"GFS on NOMADS",url:"https://nomads.ncep.noaa.gov/",icon:"☁️"}]},
+  {from:"GEFS", to:"MPAS_PREP", label:"LBCs", type:"model_bc",
+   desc:"GEFS ensemble member forecasts (30 members, 0.25°, 3-hourly) are used as lateral boundary conditions for the WoFS-MPAS ensemble. Each MPAS ensemble member is driven by a different GEFS member, propagating large-scale uncertainty into the storm-scale ensemble.",
+   tags:["GEFS 30-member ensemble","0.25° 3-hourly LBCs","Ensemble LBC uncertainty","MPAS boundary zone"],
+   links:[{title:"GEFS on AWS",url:"https://registry.opendata.aws/noaa-gefs-pds/",icon:"☁️"},{title:"WoFS-MPAS Overview",url:"https://wof.nssl.noaa.gov/",icon:"🌪️"}]},
+  {from:"HRRR", to:"MPAS_PREP", label:"init fields", type:"model_bc",
+   desc:"HRRR 3-km analyses provide high-resolution initial conditions for the WoFS-MPAS domain, offering better storm-scale detail than GFS for the convective-scale MPAS mesh. HRRR fields are regridded to the MPAS mesh before the first DA cycle.",
+   tags:["HRRR 3-km analysis","High-res ICs","Storm-scale init","MPAS mesh interpolation"],
+   links:[{title:"HRRR on AWS",url:"https://registry.opendata.aws/noaa-hrrr-pds/",icon:"☁️"}]},
+  {from:"RRFSv1", to:"MPAS_PREP", dashes:true, label:"exp. BCs/ICs", type:"model_bc",
+   desc:"Experimental: RRFSv1 (FV3, 3-km, post Oct 2026) is being tested as an alternative IC/LBC source for WoFS-MPAS, replacing HRRRe/GEFS. RRFSv1's REFS ensemble (replacing HRRRe) is the planned operational LBC source for WoFS after RRFSv1 becomes operational.",
+   tags:["Experimental / future","RRFSv1 FV3 3-km","REFS ensemble LBCs","Post-Oct 2026","Replaces HRRRe for WoFS"],
+   links:[{title:"NOAA GSL RRFS",url:"https://gsl.noaa.gov/rrfs/",icon:"🔬"},{title:"WoFS-MPAS Overview",url:"https://wof.nssl.noaa.gov/",icon:"🌪️"}]},
+
+  // ── pre-processing → DA ───────────────────────────────────
+  {from:"WPS", to:"WoFSWRF_DA", label:"ICs/BCs", type:"model_bc",
+   desc:"WPS-interpolated HRRRe fields (now on the WoFS-WRF 3-km grid) provide the ICs and BCs that initialize each WoFS-WRF ensemble member's DA cycle. These fields are the 'first guess' for the EnKF analysis at the start of the WoFS assimilation window.",
+   tags:["WPS output fields","EnKF first guess","WoFS 3-km WRF grid","ICs + BCs","DA background state"],
+   links:[{title:"WoFS Overview (NSSL)",url:"https://wof.nssl.noaa.gov/",icon:"🌪️"},{title:"WoFS Paper (Jones et al., 2020)",url:"https://doi.org/10.1175/BAMS-D-19-0245.1",icon:"📄"}]},
+  {from:"MPAS_PREP", to:"DART_DA", type:"model_bc",
+   desc:"MPAS-preprocessed initial and boundary condition fields are passed to the DART ensemble adjustment Kalman filter (EAKF) DA system as the background ensemble state for WoFS-MPAS. DART assimilates radar, satellite, and conventional obs into the MPAS ensemble.",
+   tags:["MPAS background ensemble","DART EAKF","Ensemble adjustment KF","MPAS-DART interface"],
+   links:[{title:"DART Data Assimilation Research Testbed",url:"https://dart.ucar.edu/",icon:"🔬"},{title:"MPAS-DART Interface",url:"https://dart.ucar.edu/pages/models.html",icon:"📄"}]},
+  {from:"MPAS_PREP", to:"JEDI_DA", type:"model_bc",
+   desc:"Experimental: MPAS-preprocessed fields are provided to the JEDI (Joint Effort for Data assimilation Integration) system for experimental all-sky radiance and GPS-RO assimilation into WoFS-MPAS, using the MPAS-JEDI interface developed under the OOPS framework.",
+   tags:["Experimental","MPAS-JEDI interface","OOPS framework","All-sky L1b DA","GPS-RO DA"],
+   links:[{title:"JCSDA JEDI",url:"https://www.jcsda.org/jedi",icon:"🔬"},{title:"MPAS-JEDI Documentation",url:"https://jointcenterforsatellitedataassimilation-jedi-docs.readthedocs-hosted.com/",icon:"📄"}]},
+
+  // ── obs → WoFS-WRF DA ────────────────────────────────────
+  {from:"MRMS", to:"WoFSWRF_DA", label:"radar", type:"radar",
+   desc:"MRMS 3-D reflectivity and radial velocity (Level-II) are the primary observational constraint in WoFS-WRF DA. The EnKF assimilates reflectivity (and optionally azimuthal shear) on the WoFS 3-km grid every 15 minutes, driving rapid storm-scale cycling to build a mesoscale convective analysis.",
+   tags:["MRMS 3-D reflectivity","Radial velocity","EnKF radar DA","15-min cycling","WoFS storm-scale DA"],
+   links:[{title:"WoFS Radar DA (Skinner et al., 2018)",url:"https://doi.org/10.1175/WAF-D-18-0006.1",icon:"📄"},{title:"WoFS Overview (NSSL)",url:"https://wof.nssl.noaa.gov/",icon:"🌪️"}]},
+  {from:"L2GOES", to:"WoFSWRF_DA", label:"sat", type:"satellite",
+   desc:"GOES Level-2 cloud products (cloud-top height, cloud mask, cloud water path) are assimilated into WoFS-WRF to update cloud fields and suppress spurious deep convection in the ensemble where observations indicate clear sky, supplementing the radar-based storm-scale DA.",
+   tags:["GOES L2 cloud products","WoFS cloud DA","Clear-sky suppression","CTH / CWP / cloud mask"],
+   links:[{title:"WoFS GOES DA",url:"https://wof.nssl.noaa.gov/",icon:"🌪️"}]},
+  {from:"BUFR", to:"WoFSWRF_DA", label:"conv obs", type:"obs",
+   desc:"PrepBUFR surface and upper-air conventional observations (METARs, mesonet surface obs, rawinsondes) are assimilated into WoFS-WRF DA to provide thermodynamic and kinematic constraints on the storm environment, supplementing the dense radar observations.",
+   tags:["PrepBUFR surface obs","Radiosonde profiles","Mesonet surface","Environmental thermodynamics","WoFS EnKF"],
+   links:[{title:"WoFS DA Overview",url:"https://wof.nssl.noaa.gov/",icon:"🌪️"}]},
+  {from:"MESONET", to:"WoFSWRF_DA", label:"surface", type:"obs",
+   desc:"Dense surface mesonet observations (Oklahoma Mesonet, CoCoRaHS, etc.) are assimilated into WoFS-WRF DA to constrain boundary layer thermodynamics, cold pool structure, and near-surface wind fields critical for tornado and storm environment prediction.",
+   tags:["Dense surface obs","BL thermodynamics","Cold pool structure","Near-surface winds","Oklahoma Mesonet"],
+   links:[{title:"Oklahoma Mesonet",url:"https://www.mesonet.org/",icon:"🌡️"},{title:"WoFS Surface DA",url:"https://wof.nssl.noaa.gov/",icon:"🌪️"}]},
+
+  // ── obs → DART DA ────────────────────────────────────────
+  {from:"MRMS", to:"DART_DA", label:"radar", type:"radar",
+   desc:"MRMS reflectivity and radial velocity are assimilated into WoFS-MPAS via DART's EAKF, using the same 15-min cycling strategy as WoFS-WRF. DART's MPAS interface converts between MPAS Voronoi mesh variables and observation-space quantities via forward operators.",
+   tags:["MRMS reflectivity + Vr","DART EAKF","15-min MPAS DA","MPAS forward operators","Storm-scale analysis"],
+   links:[{title:"DART MPAS Interface",url:"https://dart.ucar.edu/pages/models.html",icon:"🔬"},{title:"WoFS-MPAS DART DA",url:"https://wof.nssl.noaa.gov/",icon:"🌪️"}]},
+  {from:"L2GOES", to:"DART_DA", label:"sat L2", type:"satellite",
+   desc:"GOES Level-2 cloud products are assimilated into the WoFS-MPAS DART DA system to update cloud microphysics state variables on the MPAS mesh, providing cloud initialization constraints outside of radar coverage.",
+   tags:["GOES L2 cloud products","MPAS cloud fields","DART obs operators","MPAS microphysics"],
+   links:[{title:"DART DA System",url:"https://dart.ucar.edu/",icon:"🔬"}]},
+  {from:"BUFR", to:"DART_DA", label:"conv obs", type:"obs",
+   desc:"PrepBUFR conventional observations (surface, upper-air, aircraft) are assimilated into WoFS-MPAS DART to constrain large-scale environmental fields and boundary layer structure on the MPAS mesh.",
+   tags:["PrepBUFR conventional obs","Environmental fields","DART obs processing","MPAS DA"],
+   links:[{title:"DART Documentation",url:"https://dart.ucar.edu/",icon:"🔬"}]},
+  {from:"MESONET", to:"DART_DA", label:"surface", type:"obs",
+   desc:"Dense mesonet surface observations are assimilated into WoFS-MPAS DART to constrain boundary layer and near-surface conditions on the MPAS Voronoi mesh.",
+   tags:["Dense surface obs","BL constraints","DART EAKF","MPAS near-surface"],
+   links:[{title:"Oklahoma Mesonet",url:"https://www.mesonet.org/",icon:"🌡️"}]},
+
+  // ── obs → JEDI DA ────────────────────────────────────────
+  {from:"MRMS", to:"JEDI_DA", label:"radar", type:"radar",
+   desc:"Experimental: MRMS reflectivity and radial velocity are being assimilated into WoFS-MPAS via the JEDI/OOPS framework as part of research into next-generation storm-scale DA. JEDI's radar forward operators under development may eventually supersede the DART-based pipeline.",
+   tags:["Experimental radar DA","JEDI OOPS framework","MRMS reflectivity","Next-gen storm-scale DA"],
+   links:[{title:"JCSDA JEDI",url:"https://www.jcsda.org/jedi",icon:"🔬"}]},
+  {from:"L1B", to:"JEDI_DA", label:"all-sky L1b", type:"satellite",
+   desc:"Experimental: GOES and POES L1b radiances (all-sky, including within and around convection) are assimilated directly into WoFS-MPAS via JEDI/CRTM, bypassing the L2 retrieval step. All-sky L1b DA is the frontier of satellite DA for convective-scale NWP.",
+   tags:["All-sky L1b radiances","JEDI/CRTM","Direct radiance DA","All-sky (cloudy + precip)","Storm-scale satellite DA"],
+   links:[{title:"JCSDA CRTM",url:"https://www.jcsda.org/crtm",icon:"🔬"},{title:"All-sky DA Literature",url:"https://www.jcsda.org/",icon:"📄"}]},
+  {from:"POES", to:"JEDI_DA", label:"MW sounders", type:"satellite",
+   desc:"Experimental: POES microwave sounder radiances (ATMS, AMSU-A, MHS) are assimilated into WoFS-MPAS via JEDI for temperature and moisture profiling information at storm scale, using the CRTM microwave forward model.",
+   tags:["Microwave sounders","ATMS / AMSU-A / MHS","JEDI/CRTM microwave","T & q profiling"],
+   links:[{title:"JCSDA JEDI",url:"https://www.jcsda.org/jedi",icon:"🔬"}]},
+  {from:"GNSSRO", to:"JEDI_DA", label:"GPS-RO", type:"obs",
+   desc:"Experimental: GNSS-RO refractivity profiles are assimilated into WoFS-MPAS via JEDI, providing thermodynamic profiling constraints at the regional/mesoscale level within the WoFS domain.",
+   tags:["GPS-RO refractivity","JEDI RO obs operator","Thermodynamic profiles","COSMIC-2 / SPIRE"],
+   links:[{title:"JEDI RO Assimilation",url:"https://www.jcsda.org/jedi",icon:"🔬"}]},
+  {from:"BUFR", to:"JEDI_DA", label:"conv obs", type:"obs",
+   desc:"Experimental: Conventional observations in IODA (Interface for Observation Data Access) format are assimilated into WoFS-MPAS via JEDI, using JEDI's unified observation pre-processing and quality-control pipeline.",
+   tags:["IODA format obs","JEDI obs pre-processing","Conventional obs","JEDI QC pipeline"],
+   links:[{title:"JEDI/IODA Documentation",url:"https://jointcenterforsatellitedataassimilation-jedi-docs.readthedocs-hosted.com/",icon:"📄"}]},
+
+  // ── DA → NWP ensemble ────────────────────────────────────
+  {from:"WoFSWRF_DA", to:"WoFSWRF_ENS", type:"model_bc",
+   desc:"The WoFS-WRF EnKF analysis produces an 18-member 3-km WRF-ARW ensemble analysis every 15 minutes during the storm-scale DA window. These ensemble members — including storm-scale structures, cold pools, and mesocyclone analyses — are the initial conditions for the WoFS 0–6 hr probabilistic forecast ensemble.",
+   tags:["18-member 3-km ensemble","WRF-ARW analysis","15-min cycling","EnKF ensemble ICs","Storm-scale probabilistic IC"],
+   links:[{title:"WoFS Ensemble Forecast (Skinner et al.)",url:"https://doi.org/10.1175/WAF-D-18-0006.1",icon:"📄"},{title:"WoFS at NSSL",url:"https://wof.nssl.noaa.gov/",icon:"🌪️"}]},
+  {from:"DART_DA", to:"WoFSMPAS_ENS", type:"model_bc",
+   desc:"The WoFS-MPAS DART DA system produces an ensemble of analyzed MPAS states (18 members) on the 3-km Voronoi mesh every 15 minutes. These analysis members initialize the WoFS-MPAS probabilistic forecast ensemble and feed the WoFSCast training pipeline.",
+   tags:["MPAS ensemble analysis","DART EAKF","18-member MPAS states","15-min cycling","Voronoi mesh analysis"],
+   links:[{title:"WoFS-MPAS Overview",url:"https://wof.nssl.noaa.gov/",icon:"🌪️"},{title:"DART at NCAR",url:"https://dart.ucar.edu/",icon:"🔬"}]},
+  {from:"JEDI_DA", to:"WoFSMPAS_ENS", dashes:true, label:"experimental", type:"future",
+   desc:"Experimental: The JEDI-based DA system for WoFS-MPAS is in research mode and not yet producing operational ensemble analyses. When mature, JEDI analyses will replace or supplement DART-produced analyses as input to the WoFS-MPAS forecast ensemble.",
+   tags:["Experimental / future","JEDI MPAS analysis","Next-gen DA output","Not yet operational"],
+   links:[{title:"JCSDA JEDI",url:"https://www.jcsda.org/jedi",icon:"🔬"}]},
+
+  // ── NWP → WoFSCast ───────────────────────────────────────
+  {from:"WoFSWRF_ENS", to:"TRAIN_PIPE", label:"historical", type:"historical",
+   desc:"Years of archived WoFS-WRF ensemble analyses and forecasts (2017–present) constitute the historical training dataset for WoFSCast. The training pipeline extracts 2-D fields (radar reflectivity, winds, temperature, moisture) at standard pressure/model levels from WoFS-WRF NetCDF output for each past severe weather event.",
+   tags:["WoFS-WRF historical archive","2017–present","WoFS event cases","NetCDF NWP output","Training dataset extraction"],
+   links:[{title:"WoFSCast Paper (Lam et al. style)",url:"https://wof.nssl.noaa.gov/",icon:"📄"},{title:"WoFS Historical Archive",url:"https://wof.nssl.noaa.gov/",icon:"🗄️"}]},
+  {from:"TRAIN_PIPE", to:"GNN_MODEL", type:"training",
+   desc:"The WoFSCast training pipeline feeds preprocessed, normalized, and spatially-sampled WoFS state fields into the Graph Neural Network (GNN) training loop. Training uses teacher forcing on historical WoFS ensemble trajectories, minimizing a weighted L2 loss across forecast lead times.",
+   tags:["GNN training loop","Teacher forcing","Weighted L2 loss","Normalized WoFS fields","Historical trajectories"],
+   links:[{title:"GraphCast Paper (Lam et al., 2023)",url:"https://doi.org/10.1126/science.adi2336",icon:"📄"},{title:"WoFSCast Overview",url:"https://wof.nssl.noaa.gov/",icon:"🌪️"}]},
+  {from:"WoFSWRF_ENS", to:"INFERENCE", label:"real-time", type:"realtime",
+   desc:"Real-time WoFS-WRF ensemble analyses (current DA cycle output) provide the initial state for WoFSCast inference. The current 18-member ensemble analysis at the most recent 15-min cycle is ingested as the model input, encoding the storm-scale state into graph node features.",
+   tags:["Real-time WoFS analysis","Current DA cycle","18-member input","Graph node features","15-min latency"],
+   links:[{title:"WoFS Real-time Operations",url:"https://wof.nssl.noaa.gov/",icon:"🌪️"}]},
+  {from:"GNN_MODEL", to:"INFERENCE", label:"weights", type:"weights",
+   desc:"The trained WoFSCast GNN model weights (neural network parameters) are loaded into the inference engine at the start of each operational forecast window. The weights encode the learned storm-scale dynamics and are updated only when a new model version is trained and validated.",
+   tags:["GNN model weights","Learned dynamics","PyTorch / JAX parameters","Static during inference","Model version control"],
+   links:[{title:"GraphCast Architecture (Lam et al., 2023)",url:"https://doi.org/10.1126/science.adi2336",icon:"📄"},{title:"WoFSCast Overview",url:"https://wof.nssl.noaa.gov/",icon:"🌪️"}]},
+  {from:"INFERENCE", to:"PRODUCTS", type:"realtime",
+   desc:"WoFSCast inference output — ensemble probabilistic forecasts of 2-D fields including composite reflectivity, UH, updraft helicity, 10-m winds, and derived severe weather probabilities — are post-processed and packaged into operational products for NWS forecasters at the Storm Prediction Center (SPC) and local WFOs.",
+   tags:["WoFSCast ensemble output","Probabilistic forecasts","Composite reflectivity","Updraft helicity (UH)","SPC / WFO products"],
+   links:[{title:"WoFS Products (NSSL)",url:"https://wof.nssl.noaa.gov/",icon:"🌪️"},{title:"SPC — Storm Prediction Center",url:"https://www.spc.noaa.gov/",icon:"⛈️"}]},
+
+  // ── ERA5 / ECMWF ─────────────────────────────────────────
+  {from:"ERA5", to:"TRAIN_PIPE", label:"context", type:"training",
+   desc:"ERA5 reanalysis (1940–present, 0.25°, 137 levels, 1-hourly) provides large-scale atmospheric context fields appended to WoFS training samples: synoptic environment, hodographs, large-scale moisture transport, and storm-relative flow that help WoFSCast generalize across different synoptic regimes.",
+   tags:["ERA5 reanalysis","Large-scale context","Synoptic environment","0.25° 1-hr 137-level","Training context fields"],
+   links:[{title:"ERA5 at ECMWF",url:"https://www.ecmwf.int/en/forecasts/dataset/ecmwf-reanalysis-v5",icon:"🌐"},{title:"ERA5 on AWS",url:"https://registry.opendata.aws/ecmwf-era5/",icon:"☁️"},{title:"Hersbach et al. 2020 (ERA5 paper)",url:"https://doi.org/10.1002/qj.3803",icon:"📄"}]},
+  {from:"ERA5", to:"EAGLE", label:"training", type:"training",
+   desc:"45 years of ERA5 global reanalysis (1979–2024, hourly, 0.25°) constitute the primary training dataset for NOAA's EAGLE AI global forecast system (AIGFS/AIGEFS). EAGLE's GNN is trained to predict the next atmospheric state given the current state, using ERA5 trajectories as ground truth.",
+   tags:["45-yr ERA5 training","0.25° global reanalysis","GNN training trajectories","AIGFS/AIGEFS training","1979–2024"],
+   links:[{title:"ERA5 at ECMWF",url:"https://www.ecmwf.int/en/forecasts/dataset/ecmwf-reanalysis-v5",icon:"🌐"},{title:"NOAA EAGLE Program",url:"https://epic.noaa.gov/noaa-project-eagle-to-accelerate-ai-weather-prediction-advances-for-the-united-states/",icon:"🦅"},{title:"GraphCast (ERA5 training)",url:"https://doi.org/10.1126/science.adi2336",icon:"📄"}]},
+  {from:"IFS_AIFS", to:"EAGLE", dashes:true, label:"training", type:"training",
+   desc:"Experimental: ECMWF IFS/AIFS forecast data may supplement ERA5 training for NOAA EAGLE, providing additional high-quality global NWP trajectories including ECMWF's own AI forecast system data for transfer learning or ensemble training.",
+   tags:["Experimental","IFS/AIFS training data","ECMWF NWP trajectories","Transfer learning","Supplemental training"],
+   links:[{title:"ECMWF AIFS",url:"https://www.ecmwf.int/en/forecasts/documentation-and-support/aifs",icon:"🌐"}]},
+
+  // ── Future nodes ─────────────────────────────────────────
+  {from:"RRFSv1", to:"WOFSCAST_V2", dashes:true, label:"future BCs", type:"future",
+   desc:"Future/planned: RRFSv1 (FV3, 3-km, operational Oct 2026) will provide the boundary conditions for WoFSCast v2, replacing HRRRe/GEFS. REFS (RRFSv1 ensemble) will be the primary LBC source for the next-generation WoFS-WRF and WoFS-MPAS systems feeding WoFSCast v2.",
+   tags:["Future / planned","RRFSv1 BCs for WoFSCast v2","REFS ensemble LBCs","Post-2026"],
+   links:[{title:"NOAA GSL RRFS",url:"https://gsl.noaa.gov/rrfs/",icon:"🔬"},{title:"WoFSCast Future Development",url:"https://wof.nssl.noaa.gov/",icon:"🌪️"}]},
+  {from:"RRFSv2", to:"WOFSCAST_V2", dashes:true, label:"future BCs", type:"future",
+   desc:"Future/planned: RRFSv2 (MPAS dynamical core, ~2027–2028) will provide next-generation LBCs for WoFSCast v2, combining MPAS's unstructured mesh with improved ensemble DA from JEDI, potentially enabling seamless multi-scale BCs.",
+   tags:["Future / planned","RRFSv2 MPAS BCs","~2027–2028","JEDI ensemble DA","Seamless multi-scale"],
+   links:[{title:"NOAA GSL RRFS Roadmap",url:"https://gsl.noaa.gov/rrfs/",icon:"🔬"}]},
+  {from:"RRFSv1", to:"RRFSv2", dashes:true, label:"succeeds", type:"future",
+   desc:"RRFSv2 is the planned successor to RRFSv1, upgrading the dynamical core from FV3 to MPAS. The succession is expected ~2027–2028 after RRFSv1 has accumulated operational experience. RRFSv2 will complete the NOAA regional NWP transition to MPAS.",
+   tags:["Future succession","FV3 → MPAS upgrade","~2027–2028","NOAA NWP roadmap"],
+   links:[{title:"NOAA GSL RRFS Roadmap",url:"https://gsl.noaa.gov/rrfs/",icon:"🔬"}]},
+  {from:"EAGLE", to:"WOFSCAST_V2", dashes:true, label:"potential BCs", type:"future",
+   desc:"Future/planned: NOAA EAGLE (AIGFS/AIGEFS) is a candidate BC source for WoFSCast v2, replacing or supplementing GFS-based LBCs with AI global forecast output. Verification of EAGLE skill relative to GFS will determine its suitability as a WoFS BC source.",
+   tags:["Future / planned","EAGLE AI global BCs","AIGFS/AIGEFS LBCs","Skill-contingent","AI BC source"],
+   links:[{title:"NOAA EAGLE",url:"https://epic.noaa.gov/noaa-project-eagle-to-accelerate-ai-weather-prediction-advances-for-the-united-states/",icon:"🦅"}]},
+  {from:"IFS_AIFS", to:"WOFSCAST_V2", dashes:true, label:"potential BCs", type:"future",
+   desc:"Future/planned: ECMWF IFS/AIFS global forecasts are a potential BC source for WoFSCast v2, particularly ECMWF's AI-based AIFS which shows strong global skill. International data-sharing agreements would be required for operational use.",
+   tags:["Future / planned","ECMWF IFS/AIFS BCs","International data sharing","AI global BCs","Potential LBCs"],
+   links:[{title:"ECMWF AIFS",url:"https://www.ecmwf.int/en/forecasts/documentation-and-support/aifs",icon:"🌐"}]},
+  {from:"GEOXO", to:"RRFSv2", dashes:true, label:"~2030s", type:"future",
+   desc:"Future/planned: GeoXO's hyperspectral IR sounder (~early 2030s) will provide near-radiosonde vertical resolution thermodynamic profiles from geostationary orbit, becoming a transformative new observation type for RRFSv2-era DA systems via JEDI/CRTM.",
+   tags:["Future / planned","GeoXO hyperspectral sounder","~2030s","Near-radiosonde GEO profiles","JEDI/CRTM assimilation"],
+   links:[{title:"NOAA GeoXO Program",url:"https://www.nesdis.noaa.gov/next-generation/geoxo",icon:"🛰️"}]},
+  {from:"PAR", to:"MRMS", dashes:true, label:"future", type:"future",
+   desc:"Future/planned: Phased Array Radar (PAR), the next-generation NEXRAD successor, will deliver ~30-second volume scans (vs 4–6 min today). PAR data will feed into MRMS with dramatically improved temporal resolution, enabling faster storm-scale DA updates in WoFS.",
+   tags:["Future / planned","PAR ~30-sec scans","Next-gen NEXRAD","MRMS feed","Temporal resolution upgrade"],
+   links:[{title:"NSSL PAR Research",url:"https://www.nssl.noaa.gov/projects/par/",icon:"📡"}]},
+  {from:"RRFSv1", to:"HRRRE", dashes:true, label:"replaces", type:"future",
+   desc:"Future/planned: RRFSv1 (and its REFS ensemble) will replace HRRRe as the primary ensemble BC source for WoFS after October 6, 2026, when HRRR, RAP, NAM, HRRRe, and all HiResW domains are retired simultaneously with RRFSv1 becoming operational.",
+   tags:["Future succession","RRFSv1 replaces HRRRe","Oct 6 2026","REFS replaces HRRRe for WoFS","Operational transition"],
+   links:[{title:"NWS SCN 26-48 (RRFS Implementation)",url:"https://www.weather.gov/media/notification/pdf_2026/scn26-48_RRFS_and_REFS_Implementation.pdf",icon:"📄"},{title:"NOAA GSL RRFS",url:"https://gsl.noaa.gov/rrfs/",icon:"🔬"}]},
+
+  // ── WoFSCast-MPAS parallel pipeline edges (future/planned) ─
+  {from:"WoFSMPAS_ENS", to:"TRAIN_PIPE_MPAS", dashes:true, label:"historical", type:"future",
+   desc:"Future/planned: WoFS-MPAS historical ensemble archives will feed the dedicated WoFSCast-MPAS training pipeline, providing the MPAS-native output needed to train a GNN on the MPAS mesh geometry. This is a planned parallel to the existing WoFS-WRF → WoFSCast training path.",
+   tags:["Future / planned","WoFS-MPAS archives","MPAS training data","Parallel pipeline"],
+   links:[{title:"WoFS-MPAS Overview",url:"https://wof.nssl.noaa.gov/",icon:"🌪️"}]},
+  {from:"ERA5", to:"TRAIN_PIPE_MPAS", dashes:true, label:"context", type:"future",
+   desc:"Future/planned: ERA5 large-scale context fields would also supplement WoFSCast-MPAS training, just as they do for the WRF-based pipeline.",
+   tags:["Future / planned","ERA5 context","MPAS training context"],
+   links:[{title:"ERA5 at ECMWF",url:"https://www.ecmwf.int/en/forecasts/dataset/ecmwf-reanalysis-v5",icon:"🌐"}]},
+  {from:"TRAIN_PIPE_MPAS", to:"GNN_MPAS", dashes:true, type:"future",
+   desc:"Future/planned: The WoFSCast-MPAS training pipeline feeds preprocessed MPAS-derived tensors into the GNN training loop to produce a WoFSCast model trained on MPAS ensemble output.",
+   tags:["Future / planned","MPAS GNN training","Parallel WoFSCast model"],
+   links:[{title:"WoFSCast GitHub",url:"https://github.com/NOAA-National-Severe-Storms-Laboratory/frdd-wofs-cast",icon:"💻"}]},
+  {from:"WoFSMPAS_ENS", to:"INFERENCE_MPAS", dashes:true, label:"real-time", type:"future",
+   desc:"Future/planned: Real-time WoFS-MPAS ensemble analyses will provide the initial conditions for WoFSCast-MPAS inference, analogous to how WoFS-WRF currently feeds WoFSCast.",
+   tags:["Future / planned","Real-time MPAS analysis","Parallel inference IC"],
+   links:[{title:"WoFS-MPAS Overview",url:"https://wof.nssl.noaa.gov/",icon:"🌪️"}]},
+  {from:"GNN_MPAS", to:"INFERENCE_MPAS", dashes:true, label:"weights", type:"future",
+   desc:"Future/planned: Trained WoFSCast-MPAS GNN weights are loaded for real-time inference, analogous to the WRF-based GNN_MODEL → INFERENCE connection.",
+   tags:["Future / planned","MPAS GNN weights","Parallel inference weights"],
+   links:[{title:"WoFSCast GitHub",url:"https://github.com/NOAA-National-Severe-Storms-Laboratory/frdd-wofs-cast",icon:"💻"}]},
+  {from:"INFERENCE_MPAS", to:"PRODUCTS_MPAS", dashes:true, type:"future",
+   desc:"Future/planned: WoFSCast-MPAS inference output is post-processed into probabilistic severe weather products, analogous to the WRF-based WoFSCast products pipeline.",
+   tags:["Future / planned","MPAS probabilistic products","Parallel products pipeline"],
+   links:[{title:"NOAA WoFS Viewer",url:"https://wof.nssl.noaa.gov/",icon:"🗺️"}]},
+];
+
+// ══════════════════════════════════════════════════════════════
+// CATEGORY CONFIG
+// ══════════════════════════════════════════════════════════════
+const CAT = {
+  sensor:   {color:"#38bdf8", bg:"#0c4a6e", label:"Physical Sensors"},
+  rawproc:  {color:"#94a3b8", bg:"#1e293b", label:"Processing"},
+  global:   {color:"#f59e0b", bg:"#451a03", label:"Global Models"},
+  regional: {color:"#fb923c", bg:"#431407", label:"Regional Models"},
+  static:   {color:"#4ade80", bg:"#14532d", label:"Static Data"},
+  wofs:     {color:"#34d399", bg:"#064e3b", label:"WoFS NWP"},
+  ml:       {color:"#f472b6", bg:"#500724", label:"ML / WoFSCast"},
+  future:   {color:"#fbbf24", bg:"#451a03", label:"Future / Planned"},
+};
+
+// ══════════════════════════════════════════════════════════════
+// BUILD VIS.JS DATASET
+// ══════════════════════════════════════════════════════════════
+
+// Returns Set of nodeIds that are transitive ancestors of startId (inclusive)
+function getAncestorSet(startId) {
+  const visited = new Set();
+  const queue = [startId];
+  while (queue.length) {
+    const cur = queue.shift();
+    if (visited.has(cur)) continue;
+    visited.add(cur);
+    EDGES_DATA.filter(e => e.to === cur).forEach(e => queue.push(e.from));
+  }
+  return visited;
+}
+
+function buildNodes(filter, isolateSet) {
+  return NODES_DATA
+    .filter(n => {
+      if (isolateSet) return isolateSet.has(n.id);
+      return filter.has("all") || filter.has(n.cat);
+    })
+    .map(n => {
+      const c = CAT[n.cat];
+      return {
+        id: n.id,
+        label: n.label,
+        title: n.subtitle,
+        color: {
+          background: c.bg,
+          border: c.color,
+          highlight: {background: c.bg, border: "#fff"},
+          hover: {background: c.bg, border: c.color},
+        },
+        font: {color:"#f8fafc", size:12, face:"Segoe UI,system-ui,sans-serif"},
+        borderWidth: n.cat === "future" ? 2 : (n.experimental ? 2.5 : 1.5),
+        borderWidthSelected: 3,
+        shape: n.experimental ? "dot"
+             : n.cat === "future"   ? "hexagon"
+             : n.cat === "ml"       ? "diamond"
+             : n.cat === "sensor"   ? "box"
+             : n.cat === "rawproc"  ? "ellipse"
+             : n.cat === "static"   ? "box"
+             : "box",
+        margin: {top:8, bottom:8, left:10, right:10},
+        shadow: {enabled:true, color:"rgba(0,0,0,.4)", size:6},
+        level: NODE_LEVELS[n.id] ?? 0,
+        ...(NODE_X[n.id] !== undefined ? { x: NODE_X[n.id] } : {}),
+      };
+    });
+}
+
+function buildEdges(filter, isolateSet) {
+  const nodeIds = isolateSet ? isolateSet : new Set(
+    filter.has("all")
+      ? NODES_DATA.map(n=>n.id)
+      : NODES_DATA.filter(n=>filter.has(n.cat)).map(n=>n.id)
+  );
+  const EDGE_TYPES = {
+    radar:     {color:"#f97316", width:2.0},
+    satellite: {color:"#22d3ee", width:2.0},
+    obs:       {color:"#fbbf24", width:1.5},
+    model_bc:  {color:"#60a5fa", width:2.0},
+    static:    {color:"#4ade80", width:1.5},
+    historical:{color:"#f472b6", width:2.0},
+    training:  {color:"#c084fc", width:1.5},
+    realtime:  {color:"#fb923c", width:2.0},
+    weights:   {color:"#a78bfa", width:2.0, dashes:true},
+    future:    {color:"#64748b", width:1.5, dashes:true},
+  };
+  return EDGES_DATA
+    .filter(e => nodeIds.has(e.from) && nodeIds.has(e.to))
+    .map((e,i) => {
+      const et = EDGE_TYPES[e.type] || EDGE_TYPES.model_bc;
+      const isDashed = e.dashes || et.dashes || false;
+      const col = isDashed ? et.color + "99" : et.color;
+      return {
+        id: i,
+        from: e.from,
+        to: e.to,
+        _edgeKey: e.from + "|||" + e.to + "|||" + (e.label||""),
+        label: e.label || "",
+        dashes: isDashed,
+        arrows: "to",
+        color: {color: col, highlight:"#fff", hover: et.color, opacity: isDashed ? .65 : .88},
+        font: {color: et.color, size:10, align:"middle"},
+        width: isDashed ? (et.width * 0.75) : et.width,
+        smooth: {type:"cubicBezier", forceDirection:"vertical", roundness:.4},
+      };
+    });
+}
+
+// ══════════════════════════════════════════════════════════════
+// NETWORK INIT  —  two modes: "hierarchical" and "graph"
+// ══════════════════════════════════════════════════════════════
+let network, nodesDS, edgesDS;
+let currentMode = "hierarchical";   // "hierarchical" | "graph"
+let physicsTimer = null;
+
+// ── Explicit hierarchical levels for all nodes ────────────────
+// Using sortMethod:"hubsize" so vis.js respects these directly.
+const NODE_LEVELS = {
+  // Level 0 — Physical sensors & static ancillary data
+  WSR88D:0, GOES:0, POES:0, GNSSRO:0, RAOB:0, METAR:0, MESONET:0, ACARS:0,
+  PAR:0, GEOXO:0, TERRAIN:0, LANDUSE:0, SST:0,
+  // Level 1-2 — Raw processing
+  RPG:1, L1B:1, BUFR:1,
+  MRMS:2, L2GOES:2,
+  // Level 3 — Global DA
+  GDAS:3,
+  // Level 4 — Global models & reanalysis
+  GFS:4, ERA5:4, IFS_AIFS:4,
+  // Level 5 — AI global models (between ERA5 and RAP)
+  EAGLE:5,
+  // Level 6 — Global ensemble + mesoscale analysis
+  GEFS:6, RAP:6,
+  // Level 7 — Convection-allowing regional (current + future)
+  HRRR:7, RRFSv1:7,
+  // Level 8 — CAM ensemble (current + future)
+  HRRRE:8, RRFSv2:8,
+  // Level 9 — WoFS pre-processing
+  WPS:9, MPAS_PREP:9,
+  // Level 10 — WoFS data assimilation
+  WoFSWRF_DA:10, DART_DA:10, JEDI_DA:10,
+  // Level 11 — WoFS ensembles
+  WoFSWRF_ENS:11, WoFSMPAS_ENS:11,
+  // Level 12-15 — WoFSCast ML pipeline
+  TRAIN_PIPE:12, GNN_MODEL:13, INFERENCE:14,
+  PRODUCTS:15, WOFSCAST_V2:12,
+  // Level 12-15 — WoFSCast-MPAS parallel pipeline (future)
+  TRAIN_PIPE_MPAS:12, GNN_MPAS:13, INFERENCE_MPAS:14, PRODUCTS_MPAS:15,
+};
+
+// ── Explicit x-positions: column layout separating current from future ──
+// Column 0 (~x=0):    current / operational nodes
+// Column 1 (~x=800):  near-future / parallel nodes (WoFS-MPAS chain, RRFSv1, EAGLE)
+// Column 2 (~x=1600): further-future (WoFSCast-MPAS pipeline, RRFSv2, WoFSCast v2)
+// Column 3 (~x=2400): furthest-future (GeoXO, PAR)
+// Shared upstream nodes (sensors, global models, static) stay at x=0 (center)
+const NODE_X = {
+  // ── Near-future parallel column (x=800) ──
+  // RRFSv1 replaces HRRR — sits to the right of it at same level
+  RRFSv1:       800,
+  // EAGLE sits right of GFS/ERA5
+  EAGLE:        800,
+  // MPAS pre-processing and WoFS-MPAS chain — parallel to WPS/WoFS-WRF
+  MPAS_PREP:    800,
+  DART_DA:      800,
+  JEDI_DA:      800,
+  WoFSMPAS_ENS: 800,
+
+  // ── WoFSCast-MPAS pipeline (x=1600) — right of WoFSCast WRF ──
+  TRAIN_PIPE_MPAS: 1600,
+  GNN_MPAS:        1600,
+  INFERENCE_MPAS:  1600,
+  PRODUCTS_MPAS:   1600,
+
+  // ── WoFSCast v2 (x=2400) — rightmost, in training swimlane ──
+  WOFSCAST_V2:  2400,
+
+  // ── Further-future operational (x=1600) ──
+  RRFSv2:       1600,
+  IFS_AIFS:     1600,
+
+  // ── Furthest-future sensors (x=2400) ──
+  GEOXO:        2400,
+  PAR:          2400,
+};
+
+// ── Hierarchical mode options (static top-down layout) ────────
+function hierOptions() {
+  return {
+    layout: {
+      hierarchical: {
+        enabled:          true,
+        direction:        "UD",
+        sortMethod:       "hubsize",
+        levelSeparation:  120,
+        nodeSpacing:      160,
+        treeSpacing:      400,
+        shakeTowards:     "roots",
+        blockShifting:    true,
+        edgeMinimization: true,
+      },
+      randomSeed: 42,
+    },
+    physics: {
+      enabled:  true,
+      solver:   "hierarchicalRepulsion",
+      hierarchicalRepulsion: {
+        centralGravity: 0.1,
+        springLength:   150,
+        springConstant: 0.01,
+        nodeDistance:   150,
+        damping:        0.2,
+        avoidOverlap:   1,
+      },
+      stabilization: { enabled: true, iterations: 250, fit: true },
+    },
+    interaction: {
+      hover: true, tooltipDelay: 150,
+      navigationButtons: false, keyboard: true,
+      zoomView: true, zoomSpeed: 0.6,
+    },
+    edges: { smooth: { type:"cubicBezier", forceDirection:"vertical", roundness:0.4 } },
+  };
+}
+
+// ── Graph mode: Barnes-Hut force-directed, zoom-reactive ──────
+const PHYS_SETTLE_MS = 900;
+
+// Physics applied during zoom-reactive re-layout (after initial settle)
+function graphPhysicsForScale(scale) {
+  const s = Math.max(0.1, Math.min(4, scale));
+  const f = Math.pow(s, 0.5);   // gentle zoom scaling
+  return {
+    enabled: true,
+    solver: "barnesHut",
+    barnesHut: {
+      gravitationalConstant: Math.round(-6000 * f),
+      centralGravity:        0.05,
+      springLength:          Math.round(300 * f),
+      springConstant:        0.02,
+      damping:               0.25,
+      avoidOverlap:          1.0,
+    },
+    minVelocity: 0.75,
+    maxVelocity: 50,
+  };
+}
+
+function graphOptions() {
+  return {
+    layout: {
+      hierarchical: { enabled: false },
+      randomSeed: 42,
+    },
+    physics: {
+      ...graphPhysicsForScale(1.0),
+      stabilization: { enabled: true, iterations: 800, fit: false },
+    },
+    interaction: {
+      hover: true, tooltipDelay: 150,
+      navigationButtons: false, keyboard: true,
+      zoomView: true, zoomSpeed: 0.5,
+    },
+    edges: { smooth: { type: "dynamic" } },
+  };
+}
+
+// ── Swim lane labels per level ────────────────────────────────
+const LANE_LABELS = {
+   0: "Physical Sensors & Static Data",
+   1: "Raw Processing",
+   2: "Derived Obs Products (MRMS / L2)",
+   3: "Global DA (GDAS)",
+   4: "Global NWP Models (GFS / ERA5 / IFS)",
+   5: "AI Global Models (EAGLE)",
+   6: "Global Ensemble & Mesoscale (GEFS / RAP)",
+   7: "Convection-Allowing Regional (HRRR / RRFSv1)",
+   8: "CAM Ensemble (HRRRe / RRFSv2)",
+   9: "WoFS Pre-processing",
+  10: "WoFS Data Assimilation",
+  11: "WoFS NWP Ensembles",
+  12: "WoFSCast Training Pipeline / Future Development",
+  13: "WoFSCast Model",
+  14: "WoFSCast Inference",
+  15: "WoFSCast Products",
+};
+
+function drawSwimlanes() {
+  const el = document.getElementById("swimlanes");
+  el.innerHTML = "";
+  if (currentMode !== "hierarchical" || !network) return;
+
+  // Sample a node per level — only from nodes currently in the vis dataset
+  const levelNodes = {};
+  const visibleIds = new Set((nodesDS ? nodesDS.getIds() : []));
+  NODES_DATA.forEach(n => {
+    if (!visibleIds.has(n.id)) return;
+    const lv = NODE_LEVELS[n.id] ?? 0;
+    if (!levelNodes[lv]) levelNodes[lv] = n.id;
+  });
+
+  const levels = Object.keys(LANE_LABELS).map(Number).sort((a,b)=>a-b);
+
+  // Collect canvas-space Y for each level (use first node in that level)
+  const canvasY = {};
+  levels.forEach(lv => {
+    const id = levelNodes[lv];
+    if (!id) return;
+    const pos = network.getPositions([id]);
+    if (pos[id]) canvasY[lv] = pos[id].y;
+  });
+
+  const availLevels = levels.filter(lv => canvasY[lv] !== undefined);
+  if (availLevels.length === 0) return;
+
+  // Convert canvas Y → DOM Y
+  const domY = {};
+  availLevels.forEach(lv => {
+    domY[lv] = network.canvasToDOM({ x: 0, y: canvasY[lv] }).y;
+  });
+
+  // Build bands between midpoints of adjacent levels
+  availLevels.forEach((lv, i) => {
+    const prev = availLevels[i - 1];
+    const next = availLevels[i + 1];
+
+    const levelSep = 120; // matches hierOptions levelSeparation (approx half-band)
+    const halfGap  = network.canvasToDOM({ x: 0, y: levelSep / 2 }).y
+                   - network.canvasToDOM({ x: 0, y: 0 }).y;
+
+    const top = prev !== undefined
+      ? (domY[lv] + domY[prev]) / 2
+      : domY[lv] - Math.abs(halfGap);
+
+    const bot = next !== undefined
+      ? (domY[lv] + domY[next]) / 2
+      : domY[lv] + Math.abs(halfGap);
+
+    const lane = document.createElement("div");
+    lane.className = "swimlane";
+    lane.style.top    = top + "px";
+    lane.style.height = Math.max(bot - top, 20) + "px";
+
+    const label = document.createElement("div");
+    label.className   = "swimlane-label";
+    label.textContent = LANE_LABELS[lv] || `Level ${lv}`;
+    lane.appendChild(label);
+    el.appendChild(lane);
+  });
+}
+
+// ── Shared network bootstrap ───────────────────────────────────
+let isolateNodeId = null;   // non-null while isolate mode is active
+
+function initNetwork(filter, mode, isolateSet) {
+  mode = mode || currentMode;
+  const container = document.getElementById("network");
+  // Wipe container so vis doesn't inherit stale canvas state
+  container.innerHTML = "";
+
+  nodesDS = new vis.DataSet(buildNodes(filter, isolateSet));
+  edgesDS = new vis.DataSet(buildEdges(filter, isolateSet));
+
+  const opts = mode === "graph" ? graphOptions() : hierOptions();
+  network = new vis.Network(container, { nodes: nodesDS, edges: edgesDS }, opts);
+
+  // One-shot stabilization handler — works for both modes.
+  // We use a manual flag so it only fires once no matter which event arrives first.
+  let fitted = false;
+  function onSettle() {
+    if (fitted) return;
+    fitted = true;
+    network.setOptions({ physics: { enabled: false } });
+    network.fit();
+    if (mode === "hierarchical") setTimeout(drawSwimlanes, 100);
+  }
+
+  network.on("stabilizationIterationsDone", onSettle);
+  network.on("stabilized", onSettle);
+
+  // Hard fallback: if neither event fires in 3 s, force-fit anyway
+  setTimeout(() => onSettle(), 3000);
+
+  // Zoom-reactive gravity — only active in Graph mode.
+  network.on("zoom", function(params) {
+    if (currentMode !== "graph") return;  // hierarchical: afterDrawing handles it
+    clearTimeout(physicsTimer);
+    network.setOptions({ physics: graphPhysicsForScale(params.scale) });
+    physicsTimer = setTimeout(function() {
+      network.setOptions({ physics: { enabled: false } });
+    }, PHYS_SETTLE_MS);
+  });
+
+  // Redraw swimlanes on every canvas repaint (covers pan + zoom in hierarchical mode)
+  network.on("afterDrawing", function() {
+    if (currentMode === "hierarchical") drawSwimlanes();
+  });
+
+  // Cursor + click
+  network.on("click", function(params) {
+    if (params.nodes.length > 0) {
+      openSidebar(params.nodes[0]);
+    } else if (params.edges.length > 0) {
+      openEdgeSidebar(params.edges[0]);
+    } else {
+      closeSidebar();
+    }
+  });
+  network.on("hoverNode", function() { container.style.cursor = "pointer"; });
+  network.on("blurNode",  function() { container.style.cursor = "default"; });
+}
+
+// ── View-mode toggle ──────────────────────────────────────────
+document.getElementById("toggle-input").addEventListener("change", function(e) {
+  currentMode = e.target.checked ? "graph" : "hierarchical";
+  isolateNodeId = null;
+  document.body.classList.toggle("graph-mode", currentMode === "graph");
+  clearTimeout(physicsTimer);
+  if (currentMode === "graph") document.getElementById("swimlanes").innerHTML = "";
+  if (network) { network.destroy(); network = null; }
+  closeSidebar();
+  setTimeout(function() { initNetwork(currentFilter, currentMode, null); }, 0);
+});
+
+// ══════════════════════════════════════════════════════════════
+// SIDEBAR
+// ══════════════════════════════════════════════════════════════
+function openSidebar(nodeId) {
+  const n = NODES_DATA.find(x => x.id === nodeId);
+  if (!n) return;
+  const c = CAT[n.cat];
+  document.getElementById("sb-empty").style.display = "none";
+  document.getElementById("sb-content").style.display = "block";
+  document.getElementById("sb-edge").style.display = "none";
+
+  const catEl = document.getElementById("sb-category");
+  catEl.textContent = c.label;
+  catEl.style.background = c.bg;
+  catEl.style.color = c.color;
+  catEl.style.border = `1px solid ${c.color}`;
+
+  document.getElementById("sb-title").textContent = n.label.replace(/\n/g," ");
+  document.getElementById("sb-subtitle").textContent = n.subtitle;
+  document.getElementById("sb-desc").textContent = n.desc;
+
+  // Isolate toggle — reset to off for the newly selected node, wire up handler
+  const chk = document.getElementById("sb-isolate-chk");
+  chk.checked = (isolateNodeId === nodeId);
+  // Replace listener by cloning the element
+  const chkNew = chk.cloneNode(true);
+  chk.parentNode.replaceChild(chkNew, chk);
+  chkNew.addEventListener("change", function() {
+    if (chkNew.checked) {
+      isolateNodeId = nodeId;
+      const ancestorSet = getAncestorSet(nodeId);
+      if (network) { network.destroy(); network = null; }
+      if (currentMode === "graph") document.getElementById("swimlanes").innerHTML = "";
+      setTimeout(() => {
+        initNetwork(currentFilter, currentMode, ancestorSet);
+        // Re-open sidebar after reinit so it stays visible
+        setTimeout(() => openSidebar(nodeId), 50);
+      }, 0);
+    } else {
+      isolateNodeId = null;
+      if (network) { network.destroy(); network = null; }
+      if (currentMode === "graph") document.getElementById("swimlanes").innerHTML = "";
+      setTimeout(() => {
+        initNetwork(currentFilter, currentMode, null);
+        setTimeout(() => openSidebar(nodeId), 50);
+      }, 0);
+    }
+  });
+
+  // inputs
+  const inpEl = document.getElementById("sb-inputs");
+  const inpSec = document.getElementById("sb-inputs-sec");
+  if (n.inputs && n.inputs.length) {
+    inpEl.innerHTML = n.inputs.map(t=>`<span class="tag">${t}</span>`).join("");
+    inpSec.style.display = "block";
+  } else inpSec.style.display = "none";
+
+  // outputs
+  const outEl = document.getElementById("sb-outputs");
+  const outSec = document.getElementById("sb-outputs-sec");
+  if (n.outputs && n.outputs.length) {
+    outEl.innerHTML = n.outputs.map(t=>`<span class="tag">${t}</span>`).join("");
+    outSec.style.display = "block";
+  } else outSec.style.display = "none";
+
+  // future
+  const futEl = document.getElementById("sb-future");
+  const futSec = document.getElementById("sb-future-sec");
+  if (n.future) {
+    futEl.textContent = n.future;
+    futSec.style.display = "block";
+  } else futSec.style.display = "none";
+
+  // links
+  const linksEl = document.getElementById("sb-links");
+  const linkSec = document.getElementById("sb-links-sec");
+  if (n.links && n.links.length) {
+    linksEl.innerHTML = n.links.map(l => `
+      <a class="link-item" href="${l.url}" target="_blank" rel="noopener">
+        <span class="link-icon">${l.icon}</span>
+        <span class="link-text">
+          <span class="link-title">${l.title}</span>
+          <span class="link-url">${l.url}</span>
+        </span>
+      </a>`).join("");
+    linkSec.style.display = "block";
+  } else linkSec.style.display = "none";
+
+  // connections — upstream (nodes flowing INTO this node) and downstream
+  const upEl = document.getElementById("sb-upstream");
+  const upSec = document.getElementById("sb-upstream-sec");
+  const dnEl = document.getElementById("sb-downstream");
+  const dnSec = document.getElementById("sb-downstream-sec");
+
+  const upEdges   = EDGES_DATA.filter(e => e.to   === nodeId);
+  const downEdges = EDGES_DATA.filter(e => e.from  === nodeId);
+
+  upEl.innerHTML = "";
+  if (upEdges.length) {
+    upEdges.forEach(edgeData => {
+      const eb = buildEdgeBtn(edgeData, "upstream", nodeId);
+      if (eb) upEl.appendChild(eb);
+    });
+    upSec.style.display = "block";
+  } else upSec.style.display = "none";
+
+  dnEl.innerHTML = "";
+  if (downEdges.length) {
+    downEdges.forEach(edgeData => {
+      const eb = buildEdgeBtn(edgeData, "downstream", nodeId);
+      if (eb) dnEl.appendChild(eb);
+    });
+    dnSec.style.display = "block";
+  } else dnSec.style.display = "none";
+
+  // transitive ancestors (all nodes that can reach this node)
+  const ancEl  = document.getElementById("sb-ancestors");
+  const ancSec = document.getElementById("sb-ancestors-sec");
+  const desEl  = document.getElementById("sb-descendants");
+  const desSec = document.getElementById("sb-descendants-sec");
+
+  const directUp   = new Set(upEdges.map(e => e.from));
+  const directDown = new Set(downEdges.map(e => e.to));
+
+  ancEl.innerHTML = "";
+  if (directUp.size) {
+    [...directUp].forEach(id => { const b = buildConnBtn(id); if (b) ancEl.appendChild(b); });
+    ancSec.style.display = "block";
+  } else ancSec.style.display = "none";
+
+  desEl.innerHTML = "";
+  if (directDown.size) {
+    [...directDown].forEach(id => { const b = buildConnBtn(id); if (b) desEl.appendChild(b); });
+    desSec.style.display = "block";
+  } else desSec.style.display = "none";
+
+  document.getElementById("sidebar").classList.add("open");
+  updateLegendPosition(true);
+  network.selectNodes([nodeId]);
+}
+
+function closeSidebar() {
+  document.getElementById("sidebar").classList.remove("open");
+  document.getElementById("sb-empty").style.display = "flex";
+  document.getElementById("sb-content").style.display = "none";
+  document.getElementById("sb-edge").style.display = "none";
+  if (network) network.unselectAll();
+  updateLegendPosition(false);
+  // Exit isolate mode if active
+  if (isolateNodeId !== null) {
+    isolateNodeId = null;
+    setTimeout(() => initNetwork(currentFilter, currentMode, null), 0);
+  }
+}
+
+// Move legend left of the sidebar when it's open, back to edge otherwise
+function updateLegendPosition() {
+  // The legend is position:absolute inside #graph, which is a flex sibling of
+  // #sidebar. right:14px always keeps it flush against #graph's right edge —
+  // i.e. flush against the sidebar whenever it is open. No adjustment needed.
+  const legend = document.getElementById("legend");
+  if (legend) legend.style.right = "14px";
+}
+
+// ── Edge type config (mirrors buildEdges) ─────────────────────
+const EDGE_TYPES_UI = {
+  radar:     {color:"#f97316", label:"Radar Data"},
+  satellite: {color:"#22d3ee", label:"Satellite Data"},
+  obs:       {color:"#fbbf24", label:"Conventional Obs"},
+  model_bc:  {color:"#60a5fa", label:"Model ICs / BCs"},
+  static:    {color:"#4ade80", label:"Static Fields"},
+  historical:{color:"#f472b6", label:"Historical (Training)"},
+  training:  {color:"#c084fc", label:"Training Data"},
+  realtime:  {color:"#fb923c", label:"Real-time Data"},
+  weights:   {color:"#a78bfa", label:"ML Weights"},
+  future:    {color:"#64748b", label:"Future / Planned"},
+};
+
+function openEdgeSidebar(visEdgeId) {
+  // Resolve the underlying EDGES_DATA entry via the vis edge object
+  const visEdge = edgesDS && edgesDS.get(visEdgeId);
+  const key = visEdge && visEdge._edgeKey;
+  const e = key
+    ? EDGES_DATA.find(x => (x.from + "|||" + x.to + "|||" + (x.label||"")) === key)
+    : EDGES_DATA[visEdgeId]; // fallback for unfiltered view
+  if (!e) return;
+
+  const et = EDGE_TYPES_UI[e.type] || EDGE_TYPES_UI.model_bc;
+  const fromNode = NODES_DATA.find(x => x.id === e.from);
+  const toNode   = NODES_DATA.find(x => x.id === e.to);
+
+  // Show edge panel, hide others
+  document.getElementById("sb-empty").style.display = "none";
+  document.getElementById("sb-content").style.display = "none";
+  document.getElementById("sb-edge").style.display = "block";
+
+  // Type badge
+  const badge = document.getElementById("sbe-type-badge");
+  badge.textContent = et.label;
+  badge.style.cssText = `display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;background:${et.color}22;color:${et.color};border:1px solid ${et.color}66;margin-bottom:6px;`;
+
+  // Label + description
+  document.getElementById("sbe-label").textContent = e.label
+    ? `${e.from.replace(/_/g," ")} → ${e.to.replace(/_/g," ")}  ·  "${e.label}"`
+    : `${e.from.replace(/_/g," ")} → ${e.to.replace(/_/g," ")}`;
+  document.getElementById("sbe-desc").textContent = e.desc || "";
+
+  // Flow diagram
+  const flowEl = document.getElementById("sbe-flow");
+  flowEl.innerHTML = "";
+
+  function makeFlowNode(n) {
+    const c = n ? (CAT[n.cat] || {color:"#94a3b8", label:n.cat}) : {color:"#64748b", label:"Unknown"};
+    const lbl = n ? n.label.replace(/\n/g," ") : "Unknown";
+    const div = document.createElement("button");
+    div.className = "edge-flow-node";
+    div.innerHTML = `
+      <span class="edge-flow-dot" style="background:${c.color};"></span>
+      <span>
+        <div class="edge-flow-name">${lbl}</div>
+        <div class="edge-flow-cat">${c.label}</div>
+      </span>`;
+    if (n) div.addEventListener("click", () => focusNode(n.id));
+    return div;
+  }
+
+  flowEl.appendChild(makeFlowNode(fromNode));
+
+  // connector line + label
+  const connector = document.createElement("div");
+  connector.className = "edge-flow-connector";
+  connector.innerHTML = `
+    <div class="edge-flow-line" style="background:${et.color};"></div>
+    <span class="edge-flow-arrow-label">${e.label || et.label}${e.dashes ? " (future/exp.)" : ""}</span>`;
+  flowEl.appendChild(connector);
+
+  flowEl.appendChild(makeFlowNode(toNode));
+
+  // Tags
+  const tagsEl = document.getElementById("sbe-tags");
+  const tagsSec = document.getElementById("sbe-tags-sec");
+  if (e.tags && e.tags.length) {
+    tagsEl.innerHTML = e.tags.map(t => `<span class="tag">${t}</span>`).join("");
+    tagsSec.style.display = "block";
+  } else tagsSec.style.display = "none";
+
+  // Links
+  const linksEl = document.getElementById("sbe-links");
+  const linksSec = document.getElementById("sbe-links-sec");
+  if (e.links && e.links.length) {
+    linksEl.innerHTML = e.links.map(l => `
+      <a class="link-item" href="${l.url}" target="_blank" rel="noopener">
+        <span class="link-icon">${l.icon}</span>
+        <span class="link-text">
+          <span class="link-title">${l.title}</span>
+          <span class="link-url">${l.url}</span>
+        </span>
+      </a>`).join("");
+    linksSec.style.display = "block";
+  } else linksSec.style.display = "none";
+
+  document.getElementById("sidebar").classList.add("open");
+  updateLegendPosition(true);
+  network.selectEdges([visEdgeId]);
+}
+
+function focusNode(nodeId) {
+  if (!network) return;
+  network.focus(nodeId, { scale: 1.2, animation: { duration: 500, easingFunction: "easeInOutQuad" } });
+  openSidebar(nodeId);
+}
+
+function buildConnBtn(nodeId) {
+  const n = NODES_DATA.find(x => x.id === nodeId);
+  if (!n) return "";
+  const c = CAT[n.cat] || { bg: "#334155", color: "#94a3b8", label: n.cat };
+  const lbl = n.label.replace(/\n/g, " ");
+  const btn = document.createElement("button");
+  btn.className = "conn-node-btn";
+  btn.innerHTML = `
+    <span class="conn-dot" style="background:${c.color};"></span>
+    <span style="flex:1;min-width:0;">
+      <div class="conn-label">${lbl}</div>
+      <div class="conn-cat">${c.label}</div>
+    </span>
+    <span class="conn-arrow">→</span>`;
+  btn.addEventListener("click", () => focusNode(nodeId));
+  return btn;
+}
+
+// Build a clickable button for an edge (shows in node connections section)
+function buildEdgeBtn(edgeData, direction, currentNodeId) {
+  const et = EDGE_TYPES_UI[edgeData.type] || EDGE_TYPES_UI.model_bc;
+  const peerId = direction === "upstream" ? edgeData.from : edgeData.to;
+  const peerNode = NODES_DATA.find(x => x.id === peerId);
+  const peerLabel = peerNode ? peerNode.label.replace(/\n/g," ") : peerId;
+  const edgeLabel = edgeData.label || et.label;
+
+  const btn = document.createElement("button");
+  btn.className = "conn-edge-btn";
+  btn.innerHTML = `
+    <div class="conn-edge-line" style="background:${et.color};${edgeData.dashes?"opacity:.6;":""}" ></div>
+    <span style="flex:1;min-width:0;">
+      <div class="conn-edge-peer">${direction === "upstream" ? "← " : "→ "}${peerLabel}</div>
+      <div class="conn-edge-lbl">${edgeLabel}</div>
+    </span>`;
+  btn.addEventListener("click", () => {
+    // Find the vis edge ID by key
+    if (!edgesDS) return;
+    const key = edgeData.from + "|||" + edgeData.to + "|||" + (edgeData.label||"");
+    const all = edgesDS.get();
+    const visEdge = all.find(v => v._edgeKey === key);
+    if (visEdge != null) openEdgeSidebar(visEdge.id);
+  });
+  return btn;
+}
+
+// ══════════════════════════════════════════════════════════════
+// FILTER BUTTONS
+// ══════════════════════════════════════════════════════════════
+let currentFilter = new Set(["all"]);
+
+document.querySelectorAll(".filter-btn").forEach(btn => {
+  btn.addEventListener("click", function() {
+    const cat = btn.dataset.cat;
+    isolateNodeId = null;
+
+    if (cat === "all") {
+      // All button: reset to show everything
+      currentFilter = new Set(["all"]);
+    } else {
+      // Remove "all" when selecting a specific category
+      currentFilter.delete("all");
+      if (currentFilter.has(cat)) {
+        currentFilter.delete(cat);
+        // If nothing selected, fall back to "all"
+        if (currentFilter.size === 0) currentFilter = new Set(["all"]);
+      } else {
+        currentFilter.add(cat);
+      }
+    }
+
+    // Sync button active states
+    document.querySelectorAll(".filter-btn").forEach(b => {
+      const isAll = b.dataset.cat === "all";
+      const active = currentFilter.has("all") ? isAll : currentFilter.has(b.dataset.cat);
+      b.classList.toggle("active", active);
+    });
+
+    clearTimeout(physicsTimer);
+    if (network) { network.destroy(); network = null; }
+    closeSidebar();
+    setTimeout(function() { initNetwork(currentFilter, currentMode, null); }, 0);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+// SEARCH
+// ══════════════════════════════════════════════════════════════
+document.getElementById("search").addEventListener("input", e => {
+  const q = e.target.value.toLowerCase().trim();
+  if (!q) {
+    nodesDS.forEach(n => nodesDS.update({id:n.id, opacity:1, font:{color:"#f8fafc", size:12}}));
+    return;
+  }
+  NODES_DATA.forEach(n => {
+    const match = n.label.toLowerCase().includes(q) ||
+                  n.subtitle.toLowerCase().includes(q) ||
+                  n.desc.toLowerCase().includes(q);
+    try {
+      nodesDS.update({
+        id: n.id,
+        color: {
+          background: match ? CAT[n.cat].bg : "#0f172a",
+          border: match ? CAT[n.cat].color : "#1e293b",
+        },
+        font: {color: match ? "#f8fafc" : "#334155", size:12}
+      });
+    } catch(_) {}
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+// RESET VIEW
+// ══════════════════════════════════════════════════════════════
+document.getElementById("btn-reset").addEventListener("click", () => {
+  if (network) network.fit({animation:{duration:500, easingFunction:"easeInOutQuad"}});
+});
+
+// ══════════════════════════════════════════════════════════════
+// INIT
+// ══════════════════════════════════════════════════════════════
+initNetwork(new Set(["all"]), "hierarchical");
+</script>
+</body>
+</html>
