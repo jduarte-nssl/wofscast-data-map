@@ -920,7 +920,7 @@ const NODES_DATA = [
       {title:"WRF Model Users (NCAR/MMM)", url:"https://www2.mmm.ucar.edu/wrf/users/", icon:"🔬"},
     ]},
 
-  { id:"HRRRE", label:"HRRRe\n(HRRR-Ensemble, 6 members)", cat:"regional",
+  { id:"HRRRE", label:"HRRRe\n(HRRR-Ensemble, 36 members)", cat:"regional",
     subtitle:"3-km ensemble ICs & BCs for WoFS-WRF",
     desc:"The HRRRe is a 6-member ensemble at 3-km resolution derived from HRRR. Despite having far fewer members than WoFS (36), HRRRe is the only 3-km convection-allowing ensemble product available in real time at HRRR update frequency. It serves as the IC/BC source for WoFS-WRF — each WoFS-WRF member draws ICs/BCs from a combination of HRRRe members, supplemented by perturbations applied during WoFS DA cycling. Retired with HRRR in October 2026; successor is REFS.",
     inputs:["HRRR analyses + ensemble perturbations"],
